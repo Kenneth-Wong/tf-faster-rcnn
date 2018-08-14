@@ -116,17 +116,17 @@ class imdb(object):
             boxes[:, 0] = widths[i] - oldx2 - 1
             boxes[:, 2] = widths[i] - oldx1 - 1
             assert (boxes[:, 2] >= boxes[:, 0]).all()
+            if (boxes[:, 0] < 0).any():
+                print(boxes)
+            assert (boxes[:, 2] >= 0).all()
             entry = {k:self.roidb[i][k] for k in self.roidb[i]}
             entry['boxes'] = boxes
-            entry['flipped'] = False
-            '''
-            entry = {'boxes': boxes,
-                     'gt_overlaps': self.roidb[i]['gt_overlaps'],
-                     'gt_classes': self.roidb[i]['gt_classes'],
-                     'flipped': True}
-            '''
+            entry['flipped'] = True
             self.roidb.append(entry)
-        self._image_index = self._image_index * 2
+        if isinstance(self._image_index, np.ndarray):
+            self._image_index = np.tile(self._image_index, [2])
+        elif isinstance(self._image_index, list):
+            self._image_index = self._image_index * 2
 
     def evaluate_recall(self, candidate_boxes=None, thresholds=None,
                         area='all', limit=None):
@@ -219,11 +219,10 @@ class imdb(object):
                 'gt_overlaps': gt_overlaps}
 
     def create_roidb_from_box_list(self, box_list, gt_roidb):
-        assert len(box_list) == self.num_images, \
-            'Number of boxes must match number of ground-truth images'
+        assert len(box_list) == len(gt_roidb), \
+            'Number of boxes must match number of ground-truth roidb'
         roidb = []
-        for i in range(self.num_images):
-            boxes = box_list[i]
+        for i, boxes in enumerate(box_list):
             num_boxes = boxes.shape[0]
             overlaps = np.zeros((num_boxes, self.num_classes), dtype=np.float32)
 
@@ -248,7 +247,7 @@ class imdb(object):
         return roidb
 
     @staticmethod
-    def merge_roidbs(a, b):
+    def merge_gt_rpn_roidb(a, b):
         assert len(a) == len(b)
         for i in range(len(a)):
             a[i]['boxes'] = np.vstack((a[i]['boxes'], b[i]['boxes']))
@@ -258,6 +257,7 @@ class imdb(object):
                                                        b[i]['gt_overlaps']])
             a[i]['seg_areas'] = np.hstack((a[i]['seg_areas'],
                                            b[i]['seg_areas']))
+            a[i]['roi_scores'] = np.hstack([a[i]['roi_scores'], b[i]['roi_scores']])
         return a
 
     def competition_mode(self, on):

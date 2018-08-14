@@ -159,6 +159,8 @@ __C.TRAIN.RPN_POSITIVE_WEIGHT = -1.0
 # For COCO, setting USE_ALL_GT to False will exclude boxes that are flagged as ''iscrowd''
 __C.TRAIN.USE_ALL_GT = True
 
+__C.TRAIN.USE_RPN_DB = True
+
 #
 # Testing options
 #
@@ -260,6 +262,8 @@ __C.ROOT_DIR = osp.abspath(osp.join(osp.dirname(__file__), '..', '..'))
 # Data directory
 __C.DATA_DIR = osp.abspath(osp.join(__C.ROOT_DIR, 'data'))
 
+__C.VG_DIR = osp.abspath(osp.join(__C.DATA_DIR, 'vg'))
+
 # Name (or path to) the matlab executable
 __C.MATLAB = 'matlab'
 
@@ -288,6 +292,10 @@ __C.ANCHOR_RATIOS = [0.5, 1, 2]
 
 # Number of filters for the RPN layer
 __C.RPN_CHANNELS = 512
+
+__C.BOX_SCALE = 1024
+
+__C.IMG_SCALE = 1024
 
 
 def get_output_dir(imdb, weights_filename):

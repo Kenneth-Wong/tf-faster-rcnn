@@ -46,8 +46,7 @@ for split in ['train', 'val', 'test']:
         name = 'visual_genome_{}_{}'.format(split, task)
         __sets[name] = (lambda split=split, task=task: visual_genome(split, task,
                                                                      filter_empty_rels=(task=='rel' and split=='train'),
-                                                                     filter_duplicate_rels=split=='train',
-                                                                     filter_non_overlap=False))
+                                                                     filter_duplicate_rels=split=='train'))
 
 
 def get_imdb(name):

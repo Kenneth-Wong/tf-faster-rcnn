@@ -66,7 +66,7 @@ class vgg16(Network):
         for v in variables:
             # exclude the conv weights that are fc weights in vgg16
             if v.name == (self._scope + '/fc6/weights:0') or \
-                    v.name == (self._scope + '/fc7/weights:0'):
+                            v.name == (self._scope + '/fc7/weights:0'):
                 self._variables_to_fix[v.name] = v
                 continue
             # exclude the first conv layer to swap RGB to BGR

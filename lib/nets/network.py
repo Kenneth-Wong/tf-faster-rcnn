@@ -19,8 +19,8 @@ from layer_utils.proposal_layer import proposal_layer, proposal_layer_tf
 from layer_utils.proposal_top_layer import proposal_top_layer, proposal_top_layer_tf
 from layer_utils.anchor_target_layer import anchor_target_layer
 from layer_utils.proposal_target_layer import proposal_target_layer
-from utils.visualization import draw_bounding_boxes
-
+from utils.visualization import draw_bounding_boxes, draw_predicted_boxes
+from utils.snippets import compute_target
 from model.config import cfg
 
 
@@ -54,6 +54,21 @@ class Network(object):
                            tf.float32, name="gt_boxes")
 
         return tf.summary.image('GROUND_TRUTH', image)
+
+    def _add_pred_summary(self):
+        # also visualize the predictions of the network
+        if self._gt_image is None:
+            self._add_gt_image()
+        image = tf.py_func(draw_predicted_boxes,
+                           [self._gt_image,
+                            self._predictions['cls_prob'],
+                            self._gt_boxes],
+                           tf.float32, name="pred_boxes")
+        return tf.summary.image('PRED', image)
+
+    def _add_zero_summary(self, tensor):
+        tf.summary.scalar('ACT/' + tensor.op.name + '/zero_fraction',
+                          tf.nn.zero_fraction(tensor))
 
     def _add_act_summary(self, tensor):
         tf.summary.histogram('ACT/' + tensor.op.name + '/activations', tensor)
@@ -390,7 +405,9 @@ class Network(object):
                             anchor_scales=(8, 16, 32), anchor_ratios=(0.5, 1, 2)):
         self._image = tf.placeholder(tf.float32, shape=[1, None, None, 3])
         self._im_info = tf.placeholder(tf.float32, shape=[3])
+        self._memory_size = tf.placeholder(tf.int32, shape=[2])
         self._gt_boxes = tf.placeholder(tf.float32, shape=[None, 5])
+        self._num_gt = tf.placeholder(tf.int32, shape=[])
         self._tag = tag
 
         self._num_classes = num_classes
@@ -440,6 +457,7 @@ class Network(object):
             val_summaries = []
             with tf.device("/cpu:0"):
                 val_summaries.append(self._add_gt_image_summary())
+                val_summaries.append(self._add_pred_summary())
                 for key, var in self._event_summaries.items():
                     val_summaries.append(tf.summary.scalar(key, var))
                 for key, var in self._score_summaries.items():
@@ -502,7 +520,8 @@ class Network(object):
 
     def train_step_with_summary(self, sess, blobs, train_op):
         feed_dict = {self._image: blobs['data'], self._im_info: blobs['im_info'],
-                     self._gt_boxes: blobs['gt_boxes']}
+                     self._gt_boxes: blobs['gt_boxes'], self._memory_size: blobs['memory_size'],
+                     self._num_gt: blobs['num_gt']}
         rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss, summary, _ = sess.run([self._losses["rpn_cross_entropy"],
                                                                                      self._losses['rpn_loss_box'],
                                                                                      self._losses['cross_entropy'],
