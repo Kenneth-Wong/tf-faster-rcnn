@@ -70,8 +70,8 @@ class visual_genome(imdb):
         assert (np.all(self.all_boxes[:, :2] >= 0))
         assert (np.all(self.all_boxes[:, 2:] > 0))
 
-        self.all_boxes[:, :2] = self.all_boxes[:, :2] - self.all_boxes[:, 2:] / 2
-        self.all_boxes[:, 2:] = self.all_boxes[:, :2] + self.all_boxes[:, 2:]
+        self.all_boxes[:, :2] = self.all_boxes[:, :2] - np.floor(self.all_boxes[:, 2:] / 2)
+        self.all_boxes[:, 2:] = self.all_boxes[:, :2] + self.all_boxes[:, 2:] - 1
 
         self._info['label_to_idx']['__background__'] = 0
         self._class_to_ind = self._info['label_to_idx']
@@ -125,6 +125,13 @@ class visual_genome(imdb):
         for i in range(self.num_images):
             assert (self.im_to_first_box[i] >= 0)
             boxes = self.all_boxes[self.im_to_first_box[i]:self.im_to_last_box[i] + 1, :]
+            # clip boxes
+            w, h = self.im_sizes[i]
+            boxes[:, 0] = np.maximum(np.minimum(boxes[:, 0], w - 1), 0)
+            boxes[:, 1] = np.maximum(np.minimum(boxes[:, 1], h - 1), 0)
+            boxes[:, 2] = np.maximum(np.minimum(boxes[:, 2], w - 1), 0)
+            boxes[:, 3] = np.maximum(np.minimum(boxes[:, 3], h - 1), 0)
+
             gt_classes = self.labels[self.im_to_first_box[i]:self.im_to_last_box[i] + 1]
 
             gt_relations = []
