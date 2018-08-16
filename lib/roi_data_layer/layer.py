@@ -15,6 +15,7 @@ from __future__ import print_function
 
 from model.config import cfg
 from roi_data_layer.minibatch import get_minibatch
+from roi_data_layer.roidb import prepare_roidb, add_bbox_regression_targets
 import numpy as np
 import time
 
@@ -22,13 +23,16 @@ import time
 class RoIDataLayer(object):
     """Fast R-CNN data layer used for training."""
 
-    def __init__(self, roidb, num_classes, random=False):
+    def __init__(self, imdb, roidb, bbox_means, bbox_stds, random=False):
         """Set the roidb to be used by this layer during training."""
+        self._imdb = imdb
         self._roidb = roidb
-        self._num_classes = num_classes
+        self._num_classes = imdb.num_classes
         # Also set a random flag
         self._random = random
         self._shuffle_roidb_inds()
+        self.bbox_means = bbox_means
+        self.bbox_stds = bbox_stds
 
     def _shuffle_roidb_inds(self):
         """Randomly permute the training roidb."""
@@ -81,6 +85,10 @@ class RoIDataLayer(object):
         """
         db_inds = self._get_next_minibatch_inds()
         minibatch_db = [self._roidb[i] for i in db_inds]
+        if cfg.TRAIN.USE_RPN_DB:
+            minibatch_db = self._imdb.add_rpn_rois(minibatch_db)
+        prepare_roidb(minibatch_db)
+        add_bbox_regression_targets(minibatch_db, self.bbox_means, self.bbox_stds)
         return get_minibatch(minibatch_db, self._num_classes)
 
     def forward(self):

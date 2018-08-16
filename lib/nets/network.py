@@ -405,7 +405,6 @@ class Network(object):
                             anchor_scales=(8, 16, 32), anchor_ratios=(0.5, 1, 2)):
         self._image = tf.placeholder(tf.float32, shape=[1, None, None, 3])
         self._im_info = tf.placeholder(tf.float32, shape=[3])
-        self._memory_size = tf.placeholder(tf.int32, shape=[2])
         self._gt_boxes = tf.placeholder(tf.float32, shape=[None, 5])
         self._num_gt = tf.placeholder(tf.int32, shape=[])
         self._tag = tag

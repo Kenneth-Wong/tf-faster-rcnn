@@ -4,7 +4,8 @@ from __future__ import print_function
 
 from model.config import cfg
 from model.train_val import filter_roidb, SolverWrapper
-
+import roi_data_layer.roidb as rdl_roidb
+from roi_data_layer.layer import RoIDataLayer
 from utils.timer import Timer
 
 try:
@@ -74,8 +75,8 @@ class MemorySolverWrapper(SolverWrapper):
 
     def train_model(self, sess, max_iters):
         # Build data layers for both training and validation set
-        self.data_layer = self.imdb.data_layer(self.roidb, self.imdb.num_classes)
-        self.data_layer_val = self.imdb.data_layer(self.valroidb, self.imdb.num_classes, random=True)
+        self.data_layer = RoIDataLayer(self.imdb, self.roidb, self.bbox_means, self.bbox_stds)
+        self.data_layer_val = RoIDataLayer(self.valimdb, self.valroidb, self.bbox_means, self.bbox_stds, random=True)
 
         # Construct the computation graph
         lr, train_op = self.construct_graph(sess)
@@ -157,7 +158,7 @@ class MemorySolverWrapper(SolverWrapper):
         self.valwriter.close()
 
 
-def train_net(network, imdb, roidb, valroidb, output_dir, tb_dir,
+def train_net(network, imdb, roidb, valimdb, valroidb, output_dir, tb_dir,
               pretrained_model=None,
               max_iters=40000):
     """Train a Faster R-CNN network with memory."""
@@ -168,7 +169,7 @@ def train_net(network, imdb, roidb, valroidb, output_dir, tb_dir,
     tfconfig.gpu_options.allow_growth = True
 
     with tf.Session(config=tfconfig) as sess:
-        sw = MemorySolverWrapper(sess, network, imdb, roidb, valroidb,
+        sw = MemorySolverWrapper(sess, network, imdb, roidb, valimdb, valroidb,
                                  output_dir, tb_dir,
                                  pretrained_model=pretrained_model)
         print('Solving...')

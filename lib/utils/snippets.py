@@ -33,25 +33,33 @@ def compute_target(memory_size, gt_boxes, feat_stride):
 
 
 # Also return the reverse index of rois
-def compute_target_memory(memory_size, gt_boxes, feat_stride):
+def compute_target_memory(memory_size, rois, feat_stride):
+    """
+
+    :param memory_size: [H/16, W/16], shape of memory
+    :param rois: [N, 5], for (batch_id, x1, y1, x2, y2)
+    :param labels: [N,], roi labels
+    :param feat_stride: 16
+    :return:
+    """
     minus_h = memory_size[0] - 1.
     minus_w = memory_size[1] - 1.
-    num_gt = gt_boxes.shape[0]
+    num_roi = rois.shape[0]
+    assert np.all(rois[:, 0] == 0), 'only support single image per batch.'
 
-    x1 = gt_boxes[:, [0]] / feat_stride
-    y1 = gt_boxes[:, [1]] / feat_stride
-    x2 = gt_boxes[:, [2]] / feat_stride
-    y2 = gt_boxes[:, [3]] / feat_stride
-
-    # h, w, h, w
-    rois = np.hstack((y1, x1, y2, x2))
-    rois[:, 0::2] /= minus_h
-    rois[:, 1::2] /= minus_w
-    batch_ids = np.zeros((num_gt), dtype=np.int32)
-    labels = np.array(gt_boxes[:, 4], dtype=np.int32)
+    x1 = rois[:, [1]] / feat_stride
+    y1 = rois[:, [2]] / feat_stride
+    x2 = rois[:, [3]] / feat_stride
+    y2 = rois[:, [4]] / feat_stride
 
     # h, w, h, w
-    inv_rois = np.empty_like(rois)
+    n_rois = np.hstack((y1, x1, y2, x2))
+    n_rois[:, 0::2] /= minus_h
+    n_rois[:, 1::2] /= minus_w
+    batch_ids = np.zeros(num_roi, dtype=np.int32)
+
+    # h, w, h, w
+    inv_rois = np.empty_like(n_rois)
     inv_rois[:, 0:2] = 0.
     inv_rois[:, 2] = minus_h
     inv_rois[:, 3] = minus_w
@@ -62,9 +70,9 @@ def compute_target_memory(memory_size, gt_boxes, feat_stride):
     inv_rois[:, 0::2] /= np.maximum(y2 - y1, cfg.EPS)
     inv_rois[:, 1::2] /= np.maximum(x2 - x1, cfg.EPS)
 
-    inv_batch_ids = np.arange((num_gt), dtype=np.int32)
+    inv_batch_ids = np.arange(num_roi, dtype=np.int32)
 
-    return rois, batch_ids, labels, inv_rois, inv_batch_ids
+    return rois, batch_ids, inv_rois, inv_batch_ids
 
 
 # Update weights for the target

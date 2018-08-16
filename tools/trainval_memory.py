@@ -33,7 +33,7 @@ def parse_args():
                         default='visual_genome_train_rel', type=str)
     parser.add_argument('--imdbval', dest='imdbval_name',
                         help='dataset to validate on',
-                        default='visual _genome_val_rel', type=str)
+                        default='visual_genome_val_rel', type=str)
     parser.add_argument('--iters', dest='max_iters',
                         help='number of iterations to train',
                         default=70000, type=int)
@@ -136,6 +136,6 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
-    train_net(net, imdb, roidb, valroidb, output_dir, tb_dir,
+    train_net(net, imdb, roidb, valimdb, valroidb, output_dir, tb_dir,
               pretrained_model=args.weight,
               max_iters=args.max_iters)

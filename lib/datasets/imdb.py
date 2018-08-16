@@ -127,6 +127,7 @@ class imdb(object):
             self._image_index = np.tile(self._image_index, [2])
         elif isinstance(self._image_index, list):
             self._image_index = self._image_index * 2
+        self.im_sizes = np.vstack([self.im_sizes, self.im_sizes])
 
     def evaluate_recall(self, candidate_boxes=None, thresholds=None,
                         area='all', limit=None):
@@ -229,6 +230,14 @@ class imdb(object):
             if gt_roidb is not None and gt_roidb[i]['boxes'].size > 0:
                 gt_boxes = gt_roidb[i]['boxes']
                 gt_classes = gt_roidb[i]['gt_classes']
+                flipped = gt_roidb[i]['flipped']
+                width = gt_roidb[i]['width']
+                if flipped: ## flip the rpn boxes
+                    oldx1 = boxes[:, 0].copy()
+                    oldx2 = boxes[:, 2].copy()
+                    boxes[:, 0] = width - oldx2 - 1
+                    boxes[:, 2] = width - oldx1 - 1
+                    assert (boxes[:, 2] >= boxes[:, 0]).all()
                 gt_overlaps = bbox_overlaps(boxes.astype(np.float),
                                             gt_boxes.astype(np.float))
                 argmaxes = gt_overlaps.argmax(axis=1)
@@ -241,7 +250,6 @@ class imdb(object):
                 'boxes': boxes,
                 'gt_classes': np.zeros((num_boxes,), dtype=np.int32),
                 'gt_overlaps': overlaps,
-                'flipped': False,
                 'seg_areas': np.zeros((num_boxes,), dtype=np.float32),
             })
         return roidb

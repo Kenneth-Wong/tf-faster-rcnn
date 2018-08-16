@@ -11,7 +11,7 @@ from model.config import cfg
 import roi_data_layer.roidb as rdl_roidb
 from roi_data_layer.layer import RoIDataLayer
 from utils.timer import Timer
-
+import os.path as osp
 try:
     import cPickle as pickle
 except ImportError:
@@ -31,10 +31,11 @@ class SolverWrapper(object):
       A wrapper class for the training process
     """
 
-    def __init__(self, sess, network, imdb, roidb, valroidb, output_dir, tbdir, pretrained_model=None):
+    def __init__(self, sess, network, imdb, roidb, valimdb, valroidb, output_dir, tbdir, pretrained_model=None):
         self.net = network
         self.imdb = imdb
         self.roidb = roidb
+        self.valimdb = valimdb
         self.valroidb = valroidb
         self.output_dir = output_dir
         self.tbdir = tbdir
@@ -43,6 +44,16 @@ class SolverWrapper(object):
         if not os.path.exists(self.tbvaldir):
             os.makedirs(self.tbvaldir)
         self.pretrained_model = pretrained_model
+
+        self.bbox_means = np.zeros((self.imdb.num_classes, 4))
+        self.bbox_stds = np.ones((self.imdb.num_classes, 4))
+
+        if cfg.TRAIN.BBOX_NORMALIZE_TARGETS:
+            print('Loaded precomputer bbox target distribution from %s' % \
+                  cfg.TRAIN.BBOX_TARGET_NORMALIZATION_FILE)
+            bbox_dist = np.load(osp.join(cfg.VG_DIR, cfg.TRAIN.BBOX_TARGET_NORMALIZATION_FILE), encoding='latin1').item()
+            self.bbox_means = bbox_dist['means']
+            self.bbox_stds = bbox_dist['stds']
 
     def snapshot(self, sess, iter):
         net = self.net
@@ -329,11 +340,6 @@ def get_training_roidb(imdb):
         print('Appending horizontally-flipped training examples...')
         imdb.append_flipped_images()
         print('done')
-
-    print('Preparing training data...')
-    rdl_roidb.prepare_roidb(imdb)
-    print('done')
-
     return imdb.roidb
 
 

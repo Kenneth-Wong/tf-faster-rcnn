@@ -101,13 +101,13 @@ __C.TRAIN.SNAPSHOT_PREFIX = 'res101_faster_rcnn'
 
 # Normalize the targets (subtract empirical mean, divide by empirical stddev)
 __C.TRAIN.BBOX_NORMALIZE_TARGETS = True
-
+__C.TRAIN.BBOX_TARGET_NORMALIZATION_FILE = 'bbox_distribution.npy'
 # Deprecated (inside weights)
 __C.TRAIN.BBOX_INSIDE_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 
 # Normalize the targets using "precomputed" (or made up) means and stdevs
 # (BBOX_NORMALIZE_TARGETS must also be True)
-__C.TRAIN.BBOX_NORMALIZE_TARGETS_PRECOMPUTED = True
+__C.TRAIN.BBOX_NORMALIZE_TARGETS_PRECOMPUTED = False
 
 __C.TRAIN.BBOX_NORMALIZE_MEANS = (0.0, 0.0, 0.0, 0.0)
 
@@ -160,6 +160,8 @@ __C.TRAIN.RPN_POSITIVE_WEIGHT = -1.0
 __C.TRAIN.USE_ALL_GT = True
 
 __C.TRAIN.USE_RPN_DB = True
+
+__C.TRAIN.NUM_NEG_RELS = 128
 
 #
 # Testing options
@@ -296,6 +298,8 @@ __C.RPN_CHANNELS = 512
 __C.BOX_SCALE = 1024
 
 __C.IMG_SCALE = 1024
+
+cfg.BOTTLE_SCALE = 16.0
 
 
 def get_output_dir(imdb, weights_filename):
