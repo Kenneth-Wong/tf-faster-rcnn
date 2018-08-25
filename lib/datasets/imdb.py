@@ -20,13 +20,19 @@ from model.config import cfg
 class imdb(object):
     """Image database."""
 
-    def __init__(self, name, classes=None):
+    def __init__(self, name, classes=None, predicates=None):
         self._name = name
         self._num_classes = 0
+        self._num_predicates = 0
         if not classes:
             self._classes = []
         else:
             self._classes = classes
+        if not predicates:
+            self._predicates = []
+        else:
+            self._predicates = predicates
+
         self._image_index = []
         self._obj_proposer = 'gt'
         self._roidb = None
@@ -43,8 +49,16 @@ class imdb(object):
         return len(self._classes)
 
     @property
+    def num_predicates(self):
+        return len(self._predicates)
+
+    @property
     def classes(self):
         return self._classes
+
+    @property
+    def predicates(self):
+        return self._predicates
 
     @property
     def image_index(self):

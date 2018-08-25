@@ -32,7 +32,7 @@ class MemorySolverWrapper(SolverWrapper):
             # Set the random seed for tensorflow
             tf.set_random_seed(cfg.RNG_SEED)
             # Build the main computation graph
-            layers = self.net.create_architecture('TRAIN', self.imdb.num_classes, tag='default')
+            layers = self.net.create_architecture('TRAIN', self.imdb.num_classes, self.imdb.num_predicates, tag='default')
             # Define the loss
             loss = layers['total_loss']
             # Set learning rate and momentum

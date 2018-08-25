@@ -72,7 +72,29 @@ def compute_target_memory(memory_size, rois, feat_stride):
 
     inv_batch_ids = np.arange(num_roi, dtype=np.int32)
 
-    return rois, batch_ids, inv_rois, inv_batch_ids
+    return n_rois, batch_ids, inv_rois, inv_batch_ids
+
+
+def compute_rel_rois(num_rel, rois, relations):
+    """
+    union subject boxes and object boxes given a set of rois and relations
+    """
+    rel_rois = np.zeros([num_rel, 5])
+    for i, rel in enumerate(relations):
+        sub_im_i = rois[rel[0], 0]
+        obj_im_i = rois[rel[1], 0]
+        assert(sub_im_i == obj_im_i)
+        rel_rois[i, 0] = sub_im_i
+
+        sub_roi = rois[rel[0], 1:]
+        obj_roi = rois[rel[1], 1:]
+        union_roi = [np.minimum(sub_roi[0], obj_roi[0]),
+                    np.minimum(sub_roi[1], obj_roi[1]),
+                    np.maximum(sub_roi[2], obj_roi[2]),
+                    np.maximum(sub_roi[3], obj_roi[3])]
+        rel_rois[i, 1:] = union_roi
+
+    return rel_rois
 
 
 # Update weights for the target

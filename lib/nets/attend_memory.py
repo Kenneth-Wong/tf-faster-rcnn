@@ -124,7 +124,8 @@ class AttendMemory(BaseMemory):
         net_conv = self._image_to_head(is_training)
         with tf.variable_scope(self._scope, self._scope):
             # get the region of interest
-            rois, batch_ids, inv_rois, inv_batch_ids = self._target_memory_layer("target")
+            rois, batch_ids, inv_rois, inv_batch_ids, bbox_targets, bbox_inside_weights = \
+                self._target_memory_layer("target")
             # region of interest pooling
             pool5 = self._crop_rois(net_conv, rois, batch_ids, "pool5")
             pool5_nb = tf.stop_gradient(pool5, name="pool5_nb")
@@ -140,8 +141,9 @@ class AttendMemory(BaseMemory):
         with tf.variable_scope(self._scope, self._scope):
             # region classification
             cls_score_conv, cls_prob_conv = self._cls_init(fc7, is_training)
+            bbox_pred_conv = self._reg_init(fc7, is_training)
 
-        return cls_score_conv, pool5_nb, \
+        return cls_score_conv, bbox_pred_conv, pool5_nb, \
                rois, batch_ids, inv_rois, inv_batch_ids
 
     def _build_pred(self, is_training, mem, cls_score_conv, rois, batch_ids, iter):
@@ -161,8 +163,9 @@ class AttendMemory(BaseMemory):
     def _build_memory(self, is_training, is_testing):
         # initialize memory
         mem = self._mem_init(is_training, "mem_init")
+        rel_mem = self._rel_mem_init(is_training, "rel_mem_init")
         # convolution related stuff
-        cls_score_conv, pool5_nb, \
+        cls_score_conv, bbox_pred_conv, pool5_nb, \
         rois, batch_ids, inv_rois, inv_batch_ids = self._build_conv(is_training)
         # Separate first prediction
         reuse = None
@@ -171,6 +174,7 @@ class AttendMemory(BaseMemory):
         for iter in range(cfg.MEM.ITER):
             print('ITERATION: %02d' % iter)
             self._mems.append(mem)
+            self._rel_mems.append(rel_mem)
             with tf.variable_scope('SMN', reuse=reuse):
                 # Use memory to predict the output
                 cls_score, cls_prob, cls_pred = self._build_pred(is_training,

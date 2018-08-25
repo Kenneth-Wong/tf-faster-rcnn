@@ -13,7 +13,7 @@ from nets.resnet_v1 import resnetv1
 from nets.mobilenet_v1 import mobilenetv1
 
 from model.config import cfg
-from utils.snippets import compute_target_memory
+from utils.snippets import compute_target_memory, compute_rel_target_memory, compute_rel_rois
 from utils.visualization import draw_predicted_boxes, draw_memory
 
 
@@ -23,7 +23,10 @@ class BaseMemory(Network):
         self._predictions["cls_score"] = []
         self._predictions["cls_prob"] = []
         self._predictions["cls_pred"] = []
-
+        self._predictions["bbox_pred"] = []
+        self._predictions["rel_proposals"] = []
+        self._predictions["rel_pred"] = []
+        self._predictions["tag"] = []
         self._losses = {}
         self._targets = {}
         self._layers = {}
@@ -64,6 +67,7 @@ class BaseMemory(Network):
                                                                   [tf.float32, tf.int32, tf.float32,
                                                                    tf.int32],
                                                                   name="target_memory_layer")
+
             labels = self._labels
             bbox_targets = self._bbox_targets
             bbox_inside_weights = self._bbox_inside_weights
@@ -71,6 +75,7 @@ class BaseMemory(Network):
             rois.set_shape([None, 4])
             labels.set_shape([None, 1])
             inv_rois.set_shape([None, 4])
+
             bbox_targets.set_shape([None, 4 * self._num_classes])
             bbox_inside_weights.set_shape([None, 4 * self._num_classes])
 
@@ -89,6 +94,37 @@ class BaseMemory(Network):
             self._score_summaries[0].append(bbox_inside_weights)
 
         return rois, batch_ids, inv_rois, inv_batch_ids, bbox_targets, bbox_inside_weights
+
+    def _target_rel_memory_layer(self, name):
+        with tf.variable_scope(name):
+            rel_rois, rel_batch_ids, inv_rel_rois, inv_rel_batch_ids = tf.py_func(compute_target_memory,
+                                                                                  [self._rel_memory_size,
+                                                                                   self._rel_rois,
+                                                                                   self._feat_stride[0]],
+                                                                                  [tf.float32, tf.int32, tf.float32,
+                                                                                   tf.int32],
+                                                                                  name="target_rel_memory_layer")
+            relations = self._relations
+            predicates = self._predicates
+
+            rel_rois.set_shape([None, 4])
+            inv_rel_rois.set_shape([None, 4])
+            relations.set_shape([None, 2])
+            predicates.set_shape([None, 1])
+
+            self._targets['rel_rois'] = rel_rois
+            self._targets['rel_batch_ids'] = rel_batch_ids
+            self._targets['inv_rel_rois'] = inv_rel_rois
+            self._targets['inv_rel_batch_ids'] = inv_rel_batch_ids
+            self._targets['relations'] = relations
+            self._targets['predicates'] = predicates
+
+            self._score_summaries[0].append(rel_rois)
+            self._score_summaries[0].append(inv_rel_rois)
+            self._score_summaries[0].append(relations)
+            self._score_summaries[0].append(predicates)
+
+            return rel_rois, rel_batch_ids, inv_rel_rois, inv_rel_batch_ids
 
     def _crop_rois(self, bottom, rois, batch_ids, name, iter=0):
         with tf.variable_scope(name):
@@ -127,7 +163,7 @@ class BaseMemory(Network):
     # The initial regressions
     def _reg_init(self, fc7, is_training):
         initializer = tf.random_normal_initializer(mean=0.0, stddev=0.01)
-        bbox_pred = slim.fully_connected(fc7, self._num_classes*4,
+        bbox_pred = slim.fully_connected(fc7, self._num_classes * 4,
                                          weights_initializer=initializer,
                                          trainable=is_training,
                                          activation_fn=None, scope='bbox_pred')
@@ -240,27 +276,76 @@ class BaseMemory(Network):
 
         return cls_score_mem
 
-    def _comb_conv_mem(self, cls_score_conv, cls_score_mem, name, iter):
+    def _bbox_iter(self, mem_fc7, is_training, name, iter):
+        initializer = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM_C_STD)
+        with tf.variable_scope(name):
+            bbox_pred_mem = slim.fully_connected(mem_fc7, self._num_classes * 4,
+                                                 weights_initializer=initializer,
+                                                 activation_fn=None,
+                                                 trainable=is_training,
+                                                 biases_initializer=tf.constant_initializer(0.0),
+                                                 scope="bbox_pred_mem")
+            self._score_summaries[iter].append(bbox_pred_mem)
+        return bbox_pred_mem
+
+    def _rel_cls_iter(self, mem_fc7, is_training, name, iter):
+        initializer = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM.C_STD)
+        with tf.variable_scope(name):
+            rel_cls_score = slim.fully_connected(mem_fc7, self._num_predicates,
+                                                 weights_initializer=initializer,
+                                                 activation_fn=None,
+                                                 trainable=is_training,
+                                                 biases_initializer=tf.constant_initializer(0.0),
+                                                 scope="rel_cls_score")
+            self._score_summaries[iter].append(rel_cls_score)
+        return rel_cls_score
+
+    def _comb_conv_mem(self, cls_score_conv, cls_score_mem, bbox_pred_conv, bbox_pred_mem, name, iter):
         with tf.variable_scope(name):
             # take the output directly from each iteration
             if iter == 0:
                 cls_score = cls_score_conv
+                bbox_pred = bbox_pred_conv
             else:
                 cls_score = cls_score_mem
+                bbox_pred = bbox_pred_mem
+
             cls_prob = tf.nn.softmax(cls_score, name="cls_prob")
             cls_pred = tf.argmax(cls_score, axis=1, name="cls_pred")
 
             self._predictions['cls_score'].append(cls_score)
             self._predictions['cls_pred'].append(cls_pred)
             self._predictions['cls_prob'].append(cls_prob)
+            self._predictions['bbox_pred'].append(bbox_pred)
 
             self._score_summaries[iter].append(cls_score)
             self._score_summaries[iter].append(cls_pred)
             self._score_summaries[iter].append(cls_prob)
+            self._score_summaries[iter].append(bbox_pred)
 
-        return cls_score, cls_prob, cls_pred
+        return cls_score, cls_prob, cls_pred, bbox_pred
 
-    def _bottomtop(self, pool5, cls_prob, is_training, name, iter):
+    def _comb_rel(self, rel_cls_score_from_obj_mem, rel_cls_score_from_rel_mem, name, iter):
+        with tf.variable_scope(name):
+            if iter == 0:
+                rel_cls_score = rel_cls_score_from_obj_mem
+            else:
+                rel_cls_score = rel_cls_score_from_rel_mem
+
+            rel_cls_prob = tf.nn.softmax(rel_cls_score, name="rel_cls_prob")
+            rel_cls_pred = tf.argmax(rel_cls_score, axis=1, name="rel_cls_pred")
+
+            self._predictions['rel_cls_score'].append(rel_cls_score)
+            self._predictions['rel_cls_prob'].append(rel_cls_prob)
+            self._predictions['rel_cls_prob'].append(rel_cls_pred)
+
+            self._score_summaries[iter].append(rel_cls_score)
+            self._score_summaries[iter].append(rel_cls_prob)
+            self._score_summaries[iter].append(rel_cls_pred)
+
+        return rel_cls_score, rel_cls_prob, rel_cls_pred
+
+    def _bottomtop(self, pool5, cls_prob, bbox_pred, is_training, name, iter):
         initializer = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM.STD)
         initializer_fc = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM.STD * cfg.MEM.FP_R)
         with tf.variable_scope(name):
@@ -273,15 +358,57 @@ class BaseMemory(Network):
                                                 weights_initializer=initializer_fc,
                                                 biases_initializer=None,
                                                 scope="map_prob")
+                map_bbox = slim.fully_connected(bbox_pred,
+                                                cfg.MEM.C,
+                                                weights_initializer=initializer_fc,
+                                                biases_initializer=None,
+                                                scope="map_bbox")
+
                 map_comp = tf.reshape(map_prob, [-1, 1, 1, cfg.MEM.C], name="map_comp")
-                pool5_comp = slim.conv2d(pool5,
+                map_bbox = tf.reshape(map_bbox, [-1, 1, 1, cfg.MEM.C], name="map_bbox")
+
+                pool5_comp = tf.add_n([pool5, map_comp, map_bbox], name="addition")
+
+                pool5_comb = slim.conv2d(pool5_comp,
                                          cfg.MEM.C,
                                          [1, 1],
                                          weights_initializer=initializer,
                                          biases_initializer=tf.constant_initializer(0.0),
-                                         scope="pool5_comp")
+                                         scope="convolution")
+                pool5_comb = tf.nn.relu(pool5_comb, name="pool5_comb")
 
-                pool5_comb = tf.add(map_comp, pool5_comp, name="addition")
+                self._score_summaries[iter].append(map_prob)
+                self._score_summaries[iter].append(map_bbox)
+                self._score_summaries[iter].append(pool5_comp)
+                self._score_summaries[iter].append(pool5_comb)
+                self._act_summaries.append(pool5_comb)
+
+        return pool5_comb
+
+    def _rel_bottomtop(self, obj_mem_rel_pool5_nb, rel_cls_score_nb, is_training, name, iter):
+        initializer = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM.STD)
+        initializer_fc = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM.STD * cfg.MEM.FP_R)
+        with tf.variable_scope(name):
+            with slim.arg_scope([slim.fully_connected, slim.conv2d],
+                                activation_fn=None,
+                                trainable=is_training):
+                # just make the representation more dense
+                map_prob = slim.fully_connected(rel_cls_score_nb,
+                                                cfg.MEM.C,
+                                                weights_initializer=initializer_fc,
+                                                biases_initializer=None,
+                                                scope="rel_map_prob")
+
+                map_comp = tf.reshape(map_prob, [-1, 1, 1, cfg.MEM.C], name="rel_map_comp")
+
+                pool5_comp = tf.add_n([obj_mem_rel_pool5_nb, map_comp], name="rel_addition")
+
+                pool5_comb = slim.conv2d(pool5_comp,
+                                         cfg.MEM.C,
+                                         [1, 1],
+                                         weights_initializer=initializer,
+                                         biases_initializer=tf.constant_initializer(0.0),
+                                         scope="convolution")
                 pool5_comb = tf.nn.relu(pool5_comb, name="pool5_comb")
 
                 self._score_summaries[iter].append(map_prob)
@@ -439,11 +566,17 @@ class BaseMemory(Network):
         return mem_diff
 
     def _input_module(self, pool5_nb,
-                      cls_score_nb, cls_prob_nb, cls_pred_nb,
+                      cls_score_nb, cls_prob_nb, cls_pred_nb, bbox_pred_nb,
                       is_training, iter):
-        pool5_comb = self._bottomtop(pool5_nb, cls_score_nb, is_training, "bottom_top", iter)
+        pool5_comb = self._bottomtop(pool5_nb, cls_score_nb, bbox_pred_nb, is_training, "bottom_top", iter)
         pool5_input = self._input(pool5_comb, is_training, "pool5_input", iter)
 
+        return pool5_input
+
+    def _rel_input_module(self, obj_mem_rel_pool5_nb, rel_cls_score_nb, rel_cls_prob_nb, rel_cls_pred_nb, is_training,
+                          iter):
+        pool5_comb = self._rel_bottomtop(obj_mem_rel_pool5_nb, rel_cls_score_nb, is_training, "rel_bottom_top", iter)
+        pool5_input = self._input(pool5_comb, is_training, "rel_pool5_input", iter)
         return pool5_input
 
     def _build_conv(self, is_training):
@@ -453,6 +586,7 @@ class BaseMemory(Network):
             # get the region of interest
             rois, batch_ids, inv_rois, inv_batch_ids, bbox_targets, bbox_inside_weights = \
                 self._target_memory_layer("target")
+            rel_rois, rel_batch_ids, inv_rel_rois, inv_rel_batch_ids = self._target_rel_memory_layer("rel_target")
             # region of interest pooling
             pool5 = self._crop_rois(net_conv, rois, batch_ids, "pool5")
             pool5_nb = tf.stop_gradient(pool5, name="pool5_nb")
@@ -471,32 +605,53 @@ class BaseMemory(Network):
             bbox_pred_conv = self._reg_init(fc7, is_training)
 
         return cls_score_conv, bbox_pred_conv, pool5_nb, \
-               rois, batch_ids, inv_rois, inv_batch_ids
+               rois, batch_ids, inv_rois, inv_batch_ids, rel_rois, rel_batch_ids, inv_rel_rois, inv_rel_batch_ids
 
-    def _build_pred(self, is_training, mem, rel_mem, cls_score_conv, bbox_pred_conv, rois, batch_ids, iter):
+    def _build_pred(self, is_training, mem, cls_score_conv, bbox_pred_conv, rois, batch_ids, iter):
         if cfg.MEM.CT_L:
             mem_net = self._context(mem, is_training, "context", iter)
-            rel_mem_net = self._rel_context(rel_mem, is_training, "rel_context", iter)
         else:
             mem_net = mem
-            rel_mem_net = rel_mem
         mem_ct_pool5 = self._crop_rois(mem_net, rois, batch_ids, "mem_ct_pool5", iter)
         mem_fc7 = self._fc_iter(mem_ct_pool5, is_training, "fc7", iter)
         cls_score_mem = self._cls_iter(mem_fc7, is_training, "cls_iter", iter)
-        cls_score, cls_prob, cls_pred = self._comb_conv_mem(cls_score_conv, cls_score_mem,
-                                                            "comb_conv_mem", iter)
+        bbox_pred_mem = self._bbox_iter(mem_fc7, is_training, "bbox_iter", iter)
+        cls_score, cls_prob, cls_pred, bbox_pred = self._comb_conv_mem(cls_score_conv, cls_score_mem,
+                                                                       bbox_pred_conv, bbox_pred_mem,
+                                                                       "comb_conv_mem", iter)
 
-        return cls_score, cls_prob, cls_pred
+        return cls_score, cls_prob, cls_pred, bbox_pred
 
-    def _build_update(self, is_training, mem, pool5_nb, cls_score, cls_prob, cls_pred,
+    def _build_pred_rel(self, is_training, obj_mem_rel_pool5_nb, rel_mem, pred_rel_rois, pred_rel_batch_ids, iter):
+        # get the predicted relation scores from obj_mem
+        obj_mem_rel_fc7 = self._fc_iter(obj_mem_rel_pool5_nb, is_training, "obj_mem_rel_fc7", iter)
+        rel_cls_score_from_obj_mem = self._rel_cls_iter(obj_mem_rel_fc7, is_training, "rel_cls_score_from_obj_mem_iter",
+                                                        iter)
+
+        if cfg.MEM.CT_L:
+            rel_mem_net = self._context(rel_mem, is_training, "rel_context", iter)
+        else:
+            rel_mem_net = rel_mem
+        rel_mem_ct_pool5 = self._crop_rois(rel_mem_net, pred_rel_rois, pred_rel_batch_ids, "rel_mem_ct_pool5", iter)
+        rel_mem_fc7 = self._fc_iter(rel_mem_ct_pool5, is_training, "rel_mem_fc7", iter)
+        rel_cls_score_from_rel_mem = self._rel_cls_iter(rel_mem_fc7, is_training, "rel_cls_score_from_rel_mem_iter",
+                                                        iter)
+
+        rel_cls_score, rel_cls_prob, rel_cls_pred = self._comb_rel(rel_cls_score_from_obj_mem,
+                                                                   rel_cls_score_from_rel_mem,
+                                                                   "comb_rel_cls", iter)
+        return rel_cls_score, rel_cls_prob, rel_cls_pred
+
+    def _build_update(self, is_training, mem, pool5_nb, cls_score, cls_prob, cls_pred, bbox_pred,
                       rois, batch_ids, inv_rois, inv_batch_ids, iter):
         cls_score_nb = tf.stop_gradient(cls_score, name="cls_score_nb")
         cls_prob_nb = tf.stop_gradient(cls_prob, name="cls_prob_nb")
         cls_pred_nb = tf.stop_gradient(cls_pred, name="cls_pred_nb")
+        bbox_pred_nb = tf.stop_gradient(bbox_pred, name="bbox_pred_nb")
         pool5_mem = self._crop_rois(mem, rois, batch_ids, "pool5_mem", iter)
         pool5_input = self._input_module(pool5_nb,
                                          cls_score_nb, cls_prob_nb,
-                                         cls_pred_nb, is_training, iter)
+                                         cls_pred_nb, bbox_pred_nb, is_training, iter)
         mem_update = self._mem_update(pool5_mem, pool5_input, is_training, "mem_update", iter)
         mem_diff, _ = self._inv_crops(mem_update, inv_rois, inv_batch_ids, "inv_crop")
         self._score_summaries[iter].append(mem_diff)
@@ -507,13 +662,112 @@ class BaseMemory(Network):
 
         return mem
 
+    def _build_update_rel(self, is_training, rel_mem, obj_mem_rel_pool5_nb, rel_cls_score,
+                          rel_cls_prob, rel_cls_pred, pred_rel_rois, pred_rel_batch_ids,
+                          pred_inv_rel_rois, pred_inv_rel_batch_ids, iter):
+        rel_cls_score_nb = tf.stop_gradient(rel_cls_score, name="rel_cls_score_nb")
+        rel_cls_prob_nb = tf.stop_gradient(rel_cls_prob, name="rel_cls_prob_nb")
+        rel_cls_pred_nb = tf.stop_gradient(rel_cls_pred, name="rel_cls_pred_nb")
+        rel_pool5_mem = self._crop_rois(rel_mem, pred_rel_rois, pred_rel_batch_ids, "rel_pool5_mem", iter)
+        obj_mem_pool5_input = self._rel_input_module(obj_mem_rel_pool5_nb, rel_cls_score_nb, rel_cls_prob_nb,
+                                                     rel_cls_pred_nb, is_training, iter)
+        rel_mem_update = self._rel_mem_update(rel_pool5_mem, obj_mem_pool5_input, is_training, "rel_mem_update", iter)
+
+
+    def _build_tags(self, is_training, pool5_mem, name, iter):
+        tag_dim = cfg.MEM.TAG_D
+        xavier = tf.contrib.layers.variance_scaling_initializer()
+
+        with tf.variable_scope(name):
+            mem_flatten = slim.flatten(pool5_mem, scope='mem_flatten')
+            with slim.arg_scope([slim.fully_connected],
+                                activation_fn=tf.nn.relu,
+                                trainable=is_training,
+                                weights_initializer=xavier,
+                                biases_initializer=tf.constant_initializer(0.0)):
+                sub_tag = slim.fully_connected(mem_flatten,
+                                               tag_dim,
+                                               scope="sub_tag")
+                obj_tag = slim.fully_connected(mem_flatten,
+                                               tag_dim,
+                                               scope="obj_tag")
+                self._act_summaries.append(sub_tag)
+                self._act_summaries.append(obj_tag)
+                self._score_summaries[iter].append(sub_tag)
+                self._score_summaries[iter].append(obj_tag)
+                self._predictions['tag'].append((sub_tag, obj_tag))
+        return sub_tag, obj_tag
+
+    def _build_group(self, is_training, sub_tag, obj_tag, relations, iter):
+        assert (is_training and relations is not None) or (not is_training and relations is None)
+        dist = tf.sqrt(
+            tf.reduce_sum(tf.square(sub_tag), axis=1, keep_dims=True) + tf.reduce_sum(tf.square(tf.transpose(obj_tag)),
+                                                                                      axis=0,
+                                                                                      keep_dims=True) - 2 * tf.matmul(
+                sub_tag,
+                obj_tag,
+                transpose_b=True))
+        pred_rel = tf.where(dist <= cfg.GROUP_DIST_THRESH)
+        if is_training:
+            rels = relations
+            all_tag = tf.concat([sub_tag, obj_tag], axis=0)
+            rels[:, 1] = rels[:, 1] + sub_tag.shape[0]
+            tag_pairs = tf.gather(all_tag, rels)
+            tag_pairs = tf.reshape(tag_pairs, [-1, cfg.MEM.TAG_D * 2])
+            pair_sub, pair_obj = tf.split(tag_pairs, num_or_size_splits=2, axis=1)
+            pair_mean = tf.add(pair_sub, pair_obj) / 2
+        else:
+
+    def _pred_rel(self, is_training, mem, rel_mem, rois, batch_ids, rel_rois, rel_batch_ids,
+                  inv_rel_rois, inv_rel_batch_ids, iter):
+        # use object roi to perform RoI pooling on the object memory for computing tag
+        obj_mem_obj_pool5 = self._crop_rois(mem, rois, batch_ids, "obj_mem_obj_pool5", iter)
+        obj_mem_obj_pool5_nb = tf.stop_gradient(obj_mem_obj_pool5, name="obj_mem_obj_pool5_nb")
+        # build tag using object roi-pooling features
+        sub_tag, obj_tag = self._build_tags(is_training, obj_mem_obj_pool5_nb, "tag", iter)
+
+        # use relation roi to perform RoI pooling on the object memory for computing relations
+        obj_mem_rel_pool5 = self._crop_rois(mem, rel_rois, rel_batch_ids, "obj_mem_rel_pool5", iter)
+        obj_mem_rel_pool5_nb = tf.stop_gradient(obj_mem_rel_pool5, name="obj_mem_rel_pool5_nb")
+
+        if is_training:
+            pred_rels = self._relations
+            pred_rel_rois = rel_rois
+            pred_rel_batch_ids = rel_batch_ids
+            pred_inv_rel_rois = inv_rel_rois
+            pred_inv_rel_batch_ids = inv_rel_batch_ids
+        else:
+            dist = tf.sqrt(
+                tf.reduce_sum(tf.square(sub_tag), axis=1, keep_dims=True) + tf.reduce_sum(
+                    tf.square(tf.transpose(obj_tag)), axis=0, keep_dims=True) - 2 * tf.matmul(
+                    sub_tag, obj_tag, transpose_b=True))
+            pred_rels = tf.where(dist <= cfg.GROUP_DIST_THRESH)
+            pred_rel_rois = tf.py_func(compute_rel_rois, [pred_rels.shape[0], self._rois, pred_rels], [tf.float32, ],
+                                       name="pred_rel")
+
+            pred_rel_rois, pred_rel_batch_ids, \
+            pred_inv_rel_rois, pred_inv_rel_batch_ids = tf.py_func(compute_rel_target_memory,
+                                                                   [self.memory_size, pred_rel_rois,
+                                                                    self._feat_stride[0]],
+                                                                   [tf.float32, tf.int32, tf.float32, tf.int32],
+                                                                   name="pred_rel_rois")
+
+        rel_cls_score, rel_cls_prob, rel_cls_pred = self._build_pred_rel(is_training, obj_mem_rel_pool5_nb, rel_mem,
+                                                                         pred_rel_rois, pred_rel_batch_ids, iter)
+
+        return rel_cls_score, rel_cls_prob, rel_cls_pred, \
+               pred_rels, pred_rel_rois, pred_rel_batch_ids, pred_inv_rel_rois, pred_inv_rel_batch_ids, \
+               obj_mem_rel_pool5_nb
+
     def _build_memory(self, is_training, is_testing):
         # initialize memory
         mem = self._mem_init(is_training, "mem_init")
         rel_mem = self._rel_mem_init(is_training, "rel_mem_init")
         # convolution related stuff
         cls_score_conv, bbox_pred_conv, pool5_nb, \
-        rois, batch_ids, inv_rois, inv_batch_ids = self._build_conv(is_training)
+        rois, batch_ids, inv_rois, inv_batch_ids, \
+        rel_rois, rel_batch_ids, inv_rel_rois, inv_rel_batch_ids = self._build_conv(
+            is_training)
         # Separate first prediction
         reuse = None
         # Memory iterations
@@ -523,11 +777,11 @@ class BaseMemory(Network):
             self._rel_mems.append(rel_mem)
             with tf.variable_scope('SMN', reuse=reuse):
                 # Use memory to predict the output
-                cls_score, cls_prob, cls_pred = self._build_pred(is_training,
-                                                                 mem, rel_mem,
-                                                                 cls_score_conv,
-                                                                 bbox_pred_conv,
-                                                                 rois, batch_ids, iter)
+                cls_score, cls_prob, cls_pred, bbox_pred = self._build_pred(is_training,
+                                                                            mem,
+                                                                            cls_score_conv,
+                                                                            bbox_pred_conv,
+                                                                            rois, batch_ids, iter)
                 if iter == cfg.MEM.ITER - 1:
                     break
                 # Update the memory with all the regions
@@ -535,6 +789,19 @@ class BaseMemory(Network):
                                          pool5_nb, cls_score, cls_prob, cls_pred,
                                          rois, batch_ids, inv_rois, inv_batch_ids,
                                          iter)
+
+                # predict relations
+                rel_cls_score, rel_cls_prob, rel_cls_pred, \
+                pred_rels, pred_rel_rois, pred_rel_batch_ids, \
+                pred_inv_rel_rois, pred_inv_rel_batch_ids, \
+                obj_mem_rel_pool5_nb = self._pred_rel(
+                    is_training, mem, rel_mem, rois, batch_ids, rel_rois, rel_batch_ids,
+                    inv_rel_rois, inv_rel_batch_ids, iter)
+
+                # update relation memory
+                rel_mem = self._build_update_rel(is_training, rel_mem, obj_mem_rel_pool5_nb, rel_cls_score,
+                                                 rel_cls_prob, rel_cls_pred, pred_rel_rois, pred_rel_batch_ids,
+                                                 pred_inv_rel_rois, pred_inv_rel_batch_ids, iter)
 
             if iter == 0:
                 reuse = True
@@ -584,7 +851,7 @@ class BaseMemory(Network):
         self._summary_op = tf.summary.merge_all()
         self._summary_op_val = tf.summary.merge(val_summaries)
 
-    def create_architecture(self, mode, num_classes, tag=None):
+    def create_architecture(self, mode, num_classes, num_predicates, tag=None):
         self._image = tf.placeholder(tf.float32, shape=[1, None, None, 3])
         self._im_info = tf.placeholder(tf.float32, shape=[3])
         self._memory_size = tf.placeholder(tf.int32, shape=[2])
@@ -602,6 +869,7 @@ class BaseMemory(Network):
         self._tag = tag
 
         self._num_classes = num_classes
+        self._num_predicates = num_predicates
         self._mode = mode
 
         training = mode == 'TRAIN'
