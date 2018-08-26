@@ -671,8 +671,14 @@ class BaseMemory(Network):
         rel_pool5_mem = self._crop_rois(rel_mem, pred_rel_rois, pred_rel_batch_ids, "rel_pool5_mem", iter)
         obj_mem_pool5_input = self._rel_input_module(obj_mem_rel_pool5_nb, rel_cls_score_nb, rel_cls_prob_nb,
                                                      rel_cls_pred_nb, is_training, iter)
-        rel_mem_update = self._rel_mem_update(rel_pool5_mem, obj_mem_pool5_input, is_training, "rel_mem_update", iter)
+        rel_mem_update = self._mem_update(rel_pool5_mem, obj_mem_pool5_input, is_training, "rel_mem_update", iter)
+        rel_mem_diff, _ = self._inv_crops(rel_mem_update, pred_inv_rel_rois, pred_inv_rel_batch_ids, "rel_inv_crop")
+        self._score_summaries[iter].append(rel_mem_diff)
+        rel_mem_div = tf.div(rel_mem_diff, self._rel_count_matrix_eps, name="rel_div")
+        rel_mem = tf.add(rel_mem, rel_mem_div, name="rel_add")
+        self._score_summaries[iter].append(rel_mem)
 
+        return rel_mem
 
     def _build_tags(self, is_training, pool5_mem, name, iter):
         tag_dim = cfg.MEM.TAG_D
@@ -752,6 +758,12 @@ class BaseMemory(Network):
                                                                    [tf.float32, tf.int32, tf.float32, tf.int32],
                                                                    name="pred_rel_rois")
 
+        count_matrix_raw, self._rel_count_crops = self._inv_crops(self._count_base, pred_inv_rel_rois,
+                                                                  pred_rel_batch_ids, "rel_count_matrix")
+        self._rel_count_matrix = tf.stop_gradient(count_matrix_raw, name='rel_cm_nb')
+        self._rel_count_matrix_eps = tf.maximum(self._rel_count_matrix, cfg.EPS, name='rel_count_eps')
+        self._score_summaries[0].append(self._rel_count_matrix)
+
         rel_cls_score, rel_cls_prob, rel_cls_pred = self._build_pred_rel(is_training, obj_mem_rel_pool5_nb, rel_mem,
                                                                          pred_rel_rois, pred_rel_batch_ids, iter)
 
@@ -782,8 +794,9 @@ class BaseMemory(Network):
                                                                             cls_score_conv,
                                                                             bbox_pred_conv,
                                                                             rois, batch_ids, iter)
-                if iter == cfg.MEM.ITER - 1:
-                    break
+                #if iter == cfg.MEM.ITER - 1:
+                #    break
+
                 # Update the memory with all the regions
                 mem = self._build_update(is_training, mem,
                                          pool5_nb, cls_score, cls_prob, cls_pred,
@@ -802,6 +815,9 @@ class BaseMemory(Network):
                 rel_mem = self._build_update_rel(is_training, rel_mem, obj_mem_rel_pool5_nb, rel_cls_score,
                                                  rel_cls_prob, rel_cls_pred, pred_rel_rois, pred_rel_batch_ids,
                                                  pred_inv_rel_rois, pred_inv_rel_batch_ids, iter)
+
+                # transfer the information from relation memory to object memory
+                mem = self._build_global_rel_info(rel_mem, mem, pred_rel_rois, rel_cls_score, )
 
             if iter == 0:
                 reuse = True
