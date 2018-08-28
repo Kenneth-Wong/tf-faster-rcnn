@@ -6,7 +6,9 @@ import _init_paths
 from model.train_val import get_training_roidb
 from model.train_val_memory import train_net
 from model.config import cfg, cfg_from_file, cfg_from_list, get_output_dir, get_output_tb_dir
+from roi_data_layer.roidb import prepare_roidb
 import nets.attend_memory as attend_memory
+import nets.base_memory as base_memory
 from datasets.factory import get_imdb
 import datasets.imdb
 import argparse
@@ -42,7 +44,7 @@ def parse_args():
                         default=None, type=str)
     parser.add_argument('--net', dest='net',
                         help='vgg16, res50, res101, res152, mobile',
-                        default='res50', type=str)
+                        default='vgg16_local', type=str)
     parser.add_argument('--set', dest='set_cfgs',
                         help='set config keys', default=None,
                         nargs=argparse.REMAINDER)
@@ -55,26 +57,13 @@ def parse_args():
     return args
 
 
-def combined_roidb(imdb_names):
+def combined_roidb(imdb_name):
     """
     Combine multiple roidbs
     """
-
-    def get_roidb(imdb_name):
-        imdb = get_imdb(imdb_name)
-        print('Loaded dataset `{:s}` for training'.format(imdb.name))
-        roidb = get_training_roidb(imdb)
-        return roidb
-
-    roidbs = [get_roidb(s) for s in imdb_names.split('+')]
-    roidb = roidbs[0]
-    if len(roidbs) > 1:
-        for r in roidbs[1:]:
-            roidb.extend(r)
-        tmp = get_imdb(imdb_names.split('+')[1])
-        imdb = datasets.imdb.imdb(imdb_names, tmp.classes)
-    else:
-        imdb = get_imdb(imdb_names)
+    imdb = get_imdb(imdb_name)
+    print('Loaded dataset `{:s}` for training'.format(imdb.name))
+    roidb = get_training_roidb(imdb)
     return imdb, roidb
 
 
@@ -95,7 +84,10 @@ if __name__ == '__main__':
     np.random.seed(cfg.RNG_SEED)
 
     # train set
+
     imdb, roidb = combined_roidb(args.imdb_name)
+    prepare_roidb(roidb)
+
     print('Loaded imdb `{:s}` for training'.format(args.imdb_name))
     print('{:d} roidb entries'.format(len(roidb)))
 
@@ -103,6 +95,7 @@ if __name__ == '__main__':
     orgflip = cfg.TRAIN.USE_FLIPPED
     cfg.TRAIN.USE_FLIPPED = False
     valimdb, valroidb = combined_roidb(args.imdbval_name)
+    prepare_roidb(valroidb)
     cfg.TRAIN.USE_FLIPPED = orgflip
     print('Loaded imdb `{:s}` for validating'.format(args.imdbval_name))
     print('{:d} validation roidb entries'.format(len(valroidb)))
@@ -118,7 +111,7 @@ if __name__ == '__main__':
     net_base, net_tag = args.net.split('_')
 
     if net_tag == 'local':
-        memory = attend_memory
+        memory = base_memory
     else:
         raise NotImplementedError
 

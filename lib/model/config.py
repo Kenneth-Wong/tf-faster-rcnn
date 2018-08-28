@@ -14,6 +14,63 @@ __C = edict()
 cfg = __C
 
 #
+# Memory options
+#
+__C.MEM = edict()
+
+# Number of memory iterations
+__C.MEM.ITER = 2
+
+# Height of the memory
+__C.MEM.INIT_H = 20
+# Width of the memory
+__C.MEM.INIT_W = 20
+
+# Channel of the memory
+__C.MEM.C = 512
+
+# Basic stds in the memory
+__C.MEM.STD = 0.01
+# Base stds in the memory update function for input features
+__C.MEM.U_STD = 0.01
+# Region classification
+__C.MEM.C_STD = 0.01
+
+# Feature to memory ratio
+__C.MEM.FM_R = 1.
+# Value to gate ratio
+__C.MEM.VG_R = 1.
+# FC to Pool ratio when combing the input
+__C.MEM.FP_R = 1.
+
+# Conv kernel size for memory
+__C.MEM.CONV = 3
+
+# Canonical region size
+__C.MEM.CROP_SIZE = 7
+
+# Context aggregation
+__C.MEM.CT_L = 3
+__C.MEM.CT_CONV = 3
+__C.MEM.CT_FCONV = 3
+
+# Input feature
+__C.MEM.IN_L = 2
+__C.MEM.IN_CONV = 3
+
+# Memory final fc layer channels
+__C.MEM.FC_C = 4096
+__C.MEM.FC_L = 2
+
+# The weight for the memory based prediction
+__C.MEM.WEIGHT = 1.
+# Final supervision weight
+__C.MEM.WEIGHT_FINAL = 1.
+# The threshold to control the entropy of the distribution
+__C.MEM.BETA = .5
+
+
+#
 # Training options
 #
 __C.TRAIN = edict()

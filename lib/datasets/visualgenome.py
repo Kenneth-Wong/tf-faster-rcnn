@@ -16,7 +16,7 @@ import scipy.sparse
 
 
 class visual_genome(imdb):
-    def __init__(self, mode, task='det', num_im=-1, num_val_im=5000, filter_empty_rels=True,
+    def __init__(self, mode, task='det', num_im=10, num_val_im=1, filter_empty_rels=True,
                  filter_duplicate_rels=True):
         imdb.__init__(self, 'visual_genome_%s_%s' % (mode, task))
         if mode not in ('train', 'test', 'val'):

@@ -87,7 +87,7 @@ class RoIDataLayer(object):
         minibatch_db = [self._roidb[i] for i in db_inds]
         if cfg.TRAIN.USE_RPN_DB:
             minibatch_db = self._imdb.add_rpn_rois(minibatch_db)
-        prepare_roidb(minibatch_db)
+        #prepare_roidb(minibatch_db)
         add_bbox_regression_targets(minibatch_db, self.bbox_means, self.bbox_stds)
         return get_minibatch(minibatch_db, self._num_classes)
 

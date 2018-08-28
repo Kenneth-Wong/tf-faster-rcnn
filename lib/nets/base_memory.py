@@ -13,7 +13,7 @@ from nets.resnet_v1 import resnetv1
 from nets.mobilenet_v1 import mobilenetv1
 
 from model.config import cfg
-from utils.snippets import compute_target_memory, compute_rel_target_memory, compute_rel_rois
+from utils.snippets import compute_target_memory, compute_rel_rois
 from utils.visualization import draw_predicted_boxes, draw_memory
 
 
@@ -25,7 +25,9 @@ class BaseMemory(Network):
         self._predictions["cls_pred"] = []
         self._predictions["bbox_pred"] = []
         self._predictions["rel_proposals"] = []
-        self._predictions["rel_pred"] = []
+        self._predictions["rel_cls_score"] = []
+        self._predictions["rel_cls_prob"] = []
+        self._predictions["rel_cls_pred"] = []
         self._predictions["tag"] = []
         self._losses = {}
         self._targets = {}
@@ -71,6 +73,7 @@ class BaseMemory(Network):
             labels = self._labels
             bbox_targets = self._bbox_targets
             bbox_inside_weights = self._bbox_inside_weights
+            bbox_outside_weights = self._bbox_outside_weights
 
             rois.set_shape([None, 4])
             labels.set_shape([None, 1])
@@ -78,7 +81,7 @@ class BaseMemory(Network):
 
             bbox_targets.set_shape([None, 4 * self._num_classes])
             bbox_inside_weights.set_shape([None, 4 * self._num_classes])
-
+            bbox_outside_weights.set_shape([None, 4 * self._num_classes])
             self._targets['rois'] = rois
             self._targets['batch_ids'] = batch_ids
             self._targets['labels'] = labels
@@ -86,12 +89,14 @@ class BaseMemory(Network):
             self._targets['inv_batch_ids'] = inv_batch_ids
             self._targets['bbox_targets'] = bbox_targets
             self._targets['bbox_inside_weights'] = bbox_inside_weights
+            self._targets['bbox_outside_weights'] = bbox_outside_weights
 
             self._score_summaries[0].append(rois)
             self._score_summaries[0].append(labels)
             self._score_summaries[0].append(inv_rois)
             self._score_summaries[0].append(bbox_targets)
             self._score_summaries[0].append(bbox_inside_weights)
+            self._score_summaries[0].append(bbox_outside_weights)
 
         return rois, batch_ids, inv_rois, inv_batch_ids, bbox_targets, bbox_inside_weights
 
@@ -337,7 +342,7 @@ class BaseMemory(Network):
 
             self._predictions['rel_cls_score'].append(rel_cls_score)
             self._predictions['rel_cls_prob'].append(rel_cls_prob)
-            self._predictions['rel_cls_prob'].append(rel_cls_pred)
+            self._predictions['rel_cls_pred'].append(rel_cls_pred)
 
             self._score_summaries[iter].append(rel_cls_score)
             self._score_summaries[iter].append(rel_cls_prob)
@@ -680,6 +685,52 @@ class BaseMemory(Network):
 
         return rel_mem
 
+    def _build_update_from_rel(self, is_training, rel_mem, mem, obj_mem_obj_pool5_nb, inv_rois, inv_batch_ids,
+                               pred_rel_rois,
+                               pred_rel_batch_ids, name, iter):
+        rel_mem_nb = tf.stop_gradient(rel_mem, name="rel_mem_nb")
+        rel_mem_pool5_upd = self._crop_rois(rel_mem_nb, pred_rel_rois, pred_rel_batch_ids, "rel_mem_pool5_upd", iter)
+        rel_mem_pool5_upd_flatten = slim.flatten(rel_mem_pool5_upd, scope='rel_mem_pool5_upd_flatten')
+        obj_mem_obj_pool5_flatten = slim.flatten(obj_mem_obj_pool5_nb, scope="obj_mem_obj_pool5_flatten")
+        num_rel = rel_mem_pool5_upd_flatten.shape[0]
+        num_obj = obj_mem_obj_pool5_flatten.shape[0]
+        dim = rel_mem_pool5_upd_flatten.shape[-1]
+        assert dim == obj_mem_obj_pool5_flatten.shape[-1]
+        rel_mem_pool5_upd_flatten = tf.tile(tf.expand_dims(rel_mem_pool5_upd_flatten, axis=0),
+                                            [num_obj, 1, 1])  # N_obj, N_rel, d
+        obj_mem_obj_pool5_flatten = tf.tile(tf.expand_dims(obj_mem_obj_pool5_flatten, axis=1),
+                                            [1, num_rel, 1])  # N_obj, N_rel, d
+
+        concat_feat = tf.reshape(tf.concat([obj_mem_obj_pool5_flatten, rel_mem_pool5_upd_flatten], axis=2),
+                                 [-1, dim * 2])
+
+        xavier = tf.contrib.layers.variance_scaling_initializer()
+
+        with tf.variable_scope(name):
+            with slim.arg_scope([slim.fully_connected],
+                                activation_fn=None,
+                                trainable=is_training,
+                                weights_initializer=xavier,
+                                biases_initializer=tf.constant_initializer(0.0)):
+                weight = slim.fully_connected(concat_feat,
+                                              1,
+                                              scope="weight")
+            weight = tf.nn.softmax(tf.reshape(weight, [num_obj, num_rel, 1]), dim=1)  # N_obj, N_rel, 1
+            weight = weight[:, :, :, None, None]  # N_obj, N_rel, 1, 1, 1
+            rel_mem_pool5_upd_expd = rel_mem_pool5_upd[None]  # 1, N_rel, 7, 7, 512
+            weighted_obj_input = tf.reduce_sum(tf.multiply(weight, rel_mem_pool5_upd_expd), axis=1,
+                                               name="weighted_obj_input")  # N_obj, 7, 7, 512
+            obj_mem_update_from_rel_mem = self._mem_update(obj_mem_obj_pool5_nb, weighted_obj_input, is_training,
+                                                           "obj_mem_update_from_rel_mem", iter)
+            obj_mem_update_from_rel_mem_diff, _ = self._inv_crops(obj_mem_update_from_rel_mem, inv_rois, inv_batch_ids,
+                                                                  "obj_mem_update_from_rel_inv_crop")
+            self._score_summaries[iter].append(obj_mem_update_from_rel_mem_diff)
+            obj_mem_update_from_rel_div = tf.div(obj_mem_update_from_rel_mem_diff, self._count_matrix_eps,
+                                                 name="obj_mem_update_from_rel_div")
+            mem = tf.add(mem, obj_mem_update_from_rel_div, name="obj_mem_update_from_rel_add")
+            self._score_summaries[iter].append(mem)
+        return mem
+
     def _build_tags(self, is_training, pool5_mem, name, iter):
         tag_dim = cfg.MEM.TAG_D
         xavier = tf.contrib.layers.variance_scaling_initializer()
@@ -704,25 +755,25 @@ class BaseMemory(Network):
                 self._predictions['tag'].append((sub_tag, obj_tag))
         return sub_tag, obj_tag
 
-    def _build_group(self, is_training, sub_tag, obj_tag, relations, iter):
-        assert (is_training and relations is not None) or (not is_training and relations is None)
-        dist = tf.sqrt(
-            tf.reduce_sum(tf.square(sub_tag), axis=1, keep_dims=True) + tf.reduce_sum(tf.square(tf.transpose(obj_tag)),
-                                                                                      axis=0,
-                                                                                      keep_dims=True) - 2 * tf.matmul(
-                sub_tag,
-                obj_tag,
-                transpose_b=True))
-        pred_rel = tf.where(dist <= cfg.GROUP_DIST_THRESH)
-        if is_training:
-            rels = relations
-            all_tag = tf.concat([sub_tag, obj_tag], axis=0)
-            rels[:, 1] = rels[:, 1] + sub_tag.shape[0]
-            tag_pairs = tf.gather(all_tag, rels)
-            tag_pairs = tf.reshape(tag_pairs, [-1, cfg.MEM.TAG_D * 2])
-            pair_sub, pair_obj = tf.split(tag_pairs, num_or_size_splits=2, axis=1)
-            pair_mean = tf.add(pair_sub, pair_obj) / 2
-        else:
+    def _tag_loss(self, sub_tag, obj_tag, relations, push_weight, pull_weight, margin=1.0):
+        all_tag = tf.concat([sub_tag, obj_tag], axis=0)
+        rels = relations
+        rels[:, 1] = rels[:, 1] + sub_tag.shape[0]
+        tag_pairs = tf.gather(all_tag, rels)
+        tag_pairs = tf.reshape(tag_pairs, [-1, cfg.MEM.TAG_D * 2])
+        pair_sub, pair_obj = tf.split(tag_pairs, num_or_size_splits=2, axis=1)
+        pair_mean = tf.add(pair_sub, pair_obj) / 2
+
+        pull_loss = tf.reduce_mean(tf.reduce_sum(tf.square((pair_sub - pair_mean)), axis=1) + tf.reduce_sum(
+            tf.square((pair_obj - pair_mean)), axis=1))
+        num_roi = sub_tag.shape[0]
+        assert num_roi == obj_tag.shape[0]
+        mean_tile_hor = tf.reshape(tf.tile(pair_mean, [1, num_roi]), [-1, cfg.MEM.TAG_D])
+        mean_tile_ver = tf.tile(pair_mean, [num_roi, 1])
+        push_loss = tf.reduce_sum(tf.maximum(0, margin - tf.reduce_sum(tf.abs(mean_tile_hor - mean_tile_ver), axis=1)))
+
+        loss = push_loss * push_weight + pull_loss * pull_weight
+        return loss
 
     def _pred_rel(self, is_training, mem, rel_mem, rois, batch_ids, rel_rois, rel_batch_ids,
                   inv_rel_rois, inv_rel_batch_ids, iter):
@@ -769,7 +820,7 @@ class BaseMemory(Network):
 
         return rel_cls_score, rel_cls_prob, rel_cls_pred, \
                pred_rels, pred_rel_rois, pred_rel_batch_ids, pred_inv_rel_rois, pred_inv_rel_batch_ids, \
-               obj_mem_rel_pool5_nb
+               obj_mem_obj_pool5_nb, obj_mem_rel_pool5_nb
 
     def _build_memory(self, is_training, is_testing):
         # initialize memory
@@ -794,7 +845,7 @@ class BaseMemory(Network):
                                                                             cls_score_conv,
                                                                             bbox_pred_conv,
                                                                             rois, batch_ids, iter)
-                #if iter == cfg.MEM.ITER - 1:
+                # if iter == cfg.MEM.ITER - 1:
                 #    break
 
                 # Update the memory with all the regions
@@ -807,7 +858,7 @@ class BaseMemory(Network):
                 rel_cls_score, rel_cls_prob, rel_cls_pred, \
                 pred_rels, pred_rel_rois, pred_rel_batch_ids, \
                 pred_inv_rel_rois, pred_inv_rel_batch_ids, \
-                obj_mem_rel_pool5_nb = self._pred_rel(
+                obj_mem_obj_pool5_nb, obj_mem_rel_pool5_nb = self._pred_rel(
                     is_training, mem, rel_mem, rois, batch_ids, rel_rois, rel_batch_ids,
                     inv_rel_rois, inv_rel_batch_ids, iter)
 
@@ -817,18 +868,33 @@ class BaseMemory(Network):
                                                  pred_inv_rel_rois, pred_inv_rel_batch_ids, iter)
 
                 # transfer the information from relation memory to object memory
-                mem = self._build_global_rel_info(rel_mem, mem, pred_rel_rois, rel_cls_score, )
+                mem = self._build_update_from_rel(rel_mem, mem, obj_mem_obj_pool5_nb, inv_rois, inv_batch_ids,
+                                                  pred_rel_rois, pred_rel_batch_ids, "mem_update_from_rel",
+                                                  iter)
 
             if iter == 0:
                 reuse = True
 
-        return rois, cls_prob
+        return rois, cls_prob, bbox_pred, rel_cls_prob
 
     def _add_memory_losses(self, name):
         cross_entropy = []
+        rel_cross_entropy = []
+        bbox_loss = []
+        tag_loss = []
         assert len(self._predictions["cls_score"]) == cfg.MEM.ITER
+        assert len(self._predictions["rel_cls_score"]) == cfg.MEM.ITER
+        assert len(self._predictions["bbox_pred"]) == cfg.MEM.ITER
+        assert len(self._predictions["tag"]) == cfg.MEM.ITER
         with tf.variable_scope(name):
+            # load the groundtruth
             label = tf.reshape(self._targets["labels"], [-1])
+            predicate = tf.reshape(self._targets["predicates"], [-1])
+            relation = self._targets["relations"]
+            bbox_targets = self._targets["bbox_targets"]
+            bbox_inside_weights = self._targets["bbox_inside_weights"]
+            bbox_outside_weights = self._targets["bbox_outside_weights"]
+
             for iter in range(cfg.MEM.ITER):
                 # RCNN, class loss
                 cls_score = self._predictions["cls_score"][iter]
@@ -836,15 +902,46 @@ class BaseMemory(Network):
                                                                                    labels=label))
                 cross_entropy.append(ce)
 
+                # RCNN, bbox loss
+                bbox_pred = self._predictions["bbox_pred"][iter]
+                bbox_loss.append(
+                    self._smooth_l1_loss(bbox_pred, bbox_targets, bbox_inside_weights, bbox_outside_weights))
+
+                # relation loss
+                rel_cls_score = self._predictions["rel_cls_score"][iter]
+                rel_ce = tf.reduce_mean(
+                    tf.nn.sparse_softmax_cross_entropy_with_logits(logits=rel_cls_score, labels=predicate))
+                rel_cross_entropy.append(rel_ce)
+
+                # tag loss
+                sub_tag, obj_tag = self._predictions["tag"][iter]
+                push_pull_loss = self._tag_loss(sub_tag, obj_tag, relation, cfg.PUSH_WEIGHT, cfg.PULL_WEIGHT)
+                tag_loss.append(push_pull_loss)
+
             ce_rest = tf.stack(cross_entropy[1:], name="cross_entropy_rest")
+            bbox_loss_rest = tf.stack(bbox_loss[1:], name="bbox_loss_rest")
+            rel_ce_rest = tf.stack(rel_cross_entropy[1:], name="rel_cross_entropy_rest")
+
             self._losses['cross_entropy_image'] = cross_entropy[0]
             self._losses['cross_entropy_memory'] = tf.reduce_mean(ce_rest, name='cross_entropy')
             self._losses['cross_entropy'] = self._losses['cross_entropy_image'] \
                                             + cfg.MEM.WEIGHT * self._losses['cross_entropy_memory']
+            self._losses['bbox_loss_image'] = bbox_loss[0]
+            self._losses['bbox_loss_memory'] = tf.reduce_mean(bbox_loss_rest, name='bbox_loss')
+            self._losses['bbox_loss'] = self._losses['bbox_loss_image'] \
+                                        + cfg.MEM.WEIGHT * self._losses['bbox_loss_memory']
 
+            self._losses['rel_cross_entropy_from_obj_mem'] = rel_cross_entropy[0]
+            self._losses['rel_cross_entropy_from_rel_mem'] = tf.reduce_mean(rel_ce_rest, name='rel_cross_entropy')
+            self._losses['rel_cross_entropy'] = self._losses['rel_cross_entropy_from_obj_mem'] \
+                                                + cfg.MEM.REL_WEIGHT * self._losses['rel_cross_entropy_from_rel_mem']
+
+            self._losses['tag_loss'] = tf.reduce_mean(tag_loss, name='tag_loss')
             loss = self._losses['cross_entropy']
             regularization_loss = tf.add_n(tf.losses.get_regularization_losses(), 'regu')
-            self._losses['total_loss'] = loss + regularization_loss
+            self._losses['total_loss'] = self._losses['cross_entropy'] + self._losses['bbox_loss'] \
+                                         + self._losses['rel_cross_entropy'] + self._losses['tag_loss'] \
+                                         + regularization_loss
 
             self._event_summaries.update(self._losses)
 
@@ -879,6 +976,7 @@ class BaseMemory(Network):
         self._predicates = tf.placeholder(tf.int32, shape=[None])
         self._bbox_targets = tf.placeholder(tf.float32, shape=[None, 4 * num_classes])
         self._bbox_inside_weights = tf.placeholder(tf.float32, shape=[None, 4 * num_classes])
+        self._bbox_outside_weights = tf.placeholder(tf.float32, shape=[None, 4 * num_classes])
         self._count_base = tf.ones([1, cfg.MEM.CROP_SIZE, cfg.MEM.CROP_SIZE, 1])
         self._num_roi = tf.placeholder(tf.int32, shape=[])
         self._num_rel = tf.placeholder(tf.int32, shape=[])
@@ -906,7 +1004,7 @@ class BaseMemory(Network):
                             weights_regularizer=weights_regularizer,
                             biases_regularizer=biases_regularizer,
                             biases_initializer=tf.constant_initializer(0.0)):
-            rois = self._build_memory(training, testing)
+            rois, cls_prob, bbox_pred, rel_cls_prob = self._build_memory(training, testing)
 
         layers_to_output = {'rois': rois}
 
@@ -926,6 +1024,7 @@ class BaseMemory(Network):
                      self._labels: blobs['labels'], self._relations: blobs['relations'],
                      self._predicates: blobs['predicates'], self._bbox_targets: blobs['bbox_targets'],
                      self._bbox_inside_weights: blobs['bbox_inside_weights'],
+                     self._bbox_outside_weights: blobs['bbox_outside_weights'],
                      self._num_roi: blobs['num_roi'], self._num_rel: blobs['num_rel']}
         rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss, _ = sess.run([self._losses["rpn_cross_entropy"],
                                                                             self._losses['rpn_loss_box'],
