@@ -64,10 +64,16 @@ __C.MEM.FC_L = 2
 
 # The weight for the memory based prediction
 __C.MEM.WEIGHT = 1.
+
+__C.MEM.REL_WEIGHT = 1.
+
 # Final supervision weight
 __C.MEM.WEIGHT_FINAL = 1.
 # The threshold to control the entropy of the distribution
 __C.MEM.BETA = .5
+
+# The dimension of predicted tag
+__C.MEM.TAG_D = 16
 
 
 #
@@ -76,7 +82,7 @@ __C.MEM.BETA = .5
 __C.TRAIN = edict()
 
 # Initial learning rate
-__C.TRAIN.LEARNING_RATE = 0.001
+__C.TRAIN.RATE = 0.0005
 
 # Momentum
 __C.TRAIN.MOMENTUM = 0.9
@@ -115,6 +121,9 @@ __C.TRAIN.SNAPSHOT_KEPT = 3
 # The time interval for saving tensorflow summaries
 __C.TRAIN.SUMMARY_INTERVAL = 180
 
+# The time interval for saving tensorflow summaries
+__C.TRAIN.SUMMARY_ITERS = 500
+
 # Scale to use during training (can list multiple scales)
 # The scale is the pixel size of an image's shortest side
 __C.TRAIN.SCALES = (600,)
@@ -127,6 +136,10 @@ __C.TRAIN.IMS_PER_BATCH = 1
 
 # Minibatch size (number of regions of interest [ROIs])
 __C.TRAIN.BATCH_SIZE = 128
+
+__C.TRAIN.REL_BATCH_SIZE = 128
+
+__C.TRAIN.POS_REL_FRACTION = 0.5
 
 # Fraction of minibatch that is labeled foreground (i.e. class > 0)
 __C.TRAIN.FG_FRACTION = 0.25
@@ -357,6 +370,15 @@ __C.BOX_SCALE = 1024
 __C.IMG_SCALE = 1024
 
 cfg.BOTTLE_SCALE = 16.0
+
+# EPS, a small number for numerical issue
+__C.EPS = 1e-14
+
+__C.GROUP_DIST_THRESH = 20.
+
+__C.PUSH_WEIGHT = 0.1
+
+__C.PULL_WEIGHT = 0.1
 
 
 def get_output_dir(imdb, weights_filename):

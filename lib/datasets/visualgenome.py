@@ -16,13 +16,13 @@ import scipy.sparse
 
 
 class visual_genome(imdb):
-    def __init__(self, mode, task='det', num_im=10, num_val_im=1, filter_empty_rels=True,
+    def __init__(self, mode, task='det', num_im=-1, num_val_im=5000, filter_empty_rels=True,
                  filter_duplicate_rels=True):
         imdb.__init__(self, 'visual_genome_%s_%s' % (mode, task))
         if mode not in ('train', 'test', 'val'):
             raise ValueError("Mode must be in test, train or val. Supplied {}".format(mode))
         assert task in ('det', 'rel')
-        self.im_h5 = h5py.File(osp.join(cfg.VG_DIR, 'imdb_%d.h5'%cfg.IMG_SCALE), 'r')
+        self.im_h5 = h5py.File(osp.join(cfg.VG_DIR, 'imdb_%d.h5' % cfg.IMG_SCALE), 'r')
         self.roi_h5 = h5py.File(osp.join(cfg.VG_DIR, 'VG-SGG.h5'), 'r')
         self._info = json.load(open(osp.join(cfg.VG_DIR, 'VG-SGG-dicts.json'), 'r'))
         self._image_set = mode

@@ -29,6 +29,7 @@ def parse_args():
                         default=None, type=str)
     parser.add_argument('--weight', dest='weight',
                         help='initialize with pretrained model weights',
+                        default='/home/wangwenbin/Method/scene_graph/tf-faster-rcnn/data/imagenet_weights/res50.ckpt',
                         type=str)
     parser.add_argument('--imdb', dest='imdb_name',
                         help='dataset to train on',
@@ -44,7 +45,7 @@ def parse_args():
                         default=None, type=str)
     parser.add_argument('--net', dest='net',
                         help='vgg16, res50, res101, res152, mobile',
-                        default='vgg16_local', type=str)
+                        default='res50_local', type=str)
     parser.add_argument('--set', dest='set_cfgs',
                         help='set config keys', default=None,
                         nargs=argparse.REMAINDER)
@@ -64,6 +65,8 @@ def combined_roidb(imdb_name):
     imdb = get_imdb(imdb_name)
     print('Loaded dataset `{:s}` for training'.format(imdb.name))
     roidb = get_training_roidb(imdb)
+    #if cfg.TRAIN.USE_RPN_DB:
+    #    roidb = imdb.add_rpn_rois()
     return imdb, roidb
 
 

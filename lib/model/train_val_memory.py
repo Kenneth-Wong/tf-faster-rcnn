@@ -32,7 +32,8 @@ class MemorySolverWrapper(SolverWrapper):
             # Set the random seed for tensorflow
             tf.set_random_seed(cfg.RNG_SEED)
             # Build the main computation graph
-            layers = self.net.create_architecture('TRAIN', self.imdb.num_classes, self.imdb.num_predicates, tag='default')
+            layers = self.net.create_architecture('TRAIN', self.imdb.num_classes, self.imdb.num_predicates,
+                                                  tag='default')
             # Define the loss
             loss = layers['total_loss']
             # Set learning rate and momentum
@@ -117,25 +118,28 @@ class MemorySolverWrapper(SolverWrapper):
                     (now - last_summary_time > cfg.TRAIN.SUMMARY_INTERVAL and \
                                      iter - last_summary_iter > cfg.TRAIN.SUMMARY_ITERS):
                 # Compute the graph with summary
-                loss_cls, total_loss, summary, gsummary = \
-                    self.net.train_step_with_summary(sess, blobs, train_op, self.summary_grads)
-                self.writer.add_summary(summary, float(iter))
-                self.writer.add_summary(gsummary, float(iter + 1))
+                # loss_cls, loss_bbox, loss_rel, loss_tag, total_loss, summary, gsummary = \
+                #    self.net.train_step_with_summary(sess, blobs, train_op, self.summary_grads)
+                loss_cls, loss_bbox, loss_rel, loss_tag, total_loss = self.net.train_step(sess, blobs, train_op)
+                # self.writer.add_summary(summary, float(iter))
+                # self.writer.add_summary(gsummary, float(iter + 1))
                 # Also check the summary on the validation set
-                blobs_val = self.data_layer_val.forward()
-                summary_val = self.net.get_summary(sess, blobs_val)
-                self.valwriter.add_summary(summary_val, float(iter))
-                last_summary_iter = iter
-                last_summary_time = now
+                # blobs_val = self.data_layer_val.forward()
+                # summary_val = self.net.get_summary(sess, blobs_val)
+                # self.valwriter.add_summary(summary_val, float(iter))
+                # last_summary_iter = iter
+                # last_summary_time = now
             else:
                 # Compute the graph without summary
-                loss_cls, total_loss = self.net.train_step(sess, blobs, train_op)
+                loss_cls, loss_bbox, loss_rel, loss_tag, total_loss = self.net.train_step(sess, blobs, train_op)
             timer.toc()
 
             # Display training information
             if iter % (cfg.TRAIN.DISPLAY) == 0:
-                print('iter: %d / %d, total loss: %.6f\n >>> loss_cls: %.6f\n >>> lr: %f' % \
-                      (iter, max_iters, total_loss, loss_cls, lr.eval()))
+                print(
+                    'iter: %d / %d, total loss: %.6f\n >>> loss_cls: %.6f\n >>> loss_bbox: %.6f\n '
+                    '>>> loss_rel: %.6f\n >>> loss_tag: %.6f\n >>> lr: %f' % \
+                    (iter, max_iters, total_loss, loss_cls, loss_bbox, loss_rel, loss_tag, lr.eval()))
                 print('speed: {:.3f}s / iter'.format(timer.average_time))
 
             # Snapshotting
@@ -162,8 +166,8 @@ def train_net(network, imdb, roidb, valimdb, valroidb, output_dir, tb_dir,
               pretrained_model=None,
               max_iters=40000):
     """Train a Faster R-CNN network with memory."""
-    roidb = filter_roidb(roidb)
-    valroidb = filter_roidb(valroidb)
+    #roidb = filter_roidb(roidb)
+    #valroidb = filter_roidb(valroidb)
 
     tfconfig = tf.ConfigProto(allow_soft_placement=True)
     tfconfig.gpu_options.allow_growth = True

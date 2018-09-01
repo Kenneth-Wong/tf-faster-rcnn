@@ -32,6 +32,8 @@ def get_minibatch(roidb, num_classes):
     rois_per_image = int(cfg.TRAIN.BATCH_SIZE / num_images)
     fg_rois_per_image = np.round(cfg.TRAIN.FG_FRACTION * rois_per_image).astype(np.int32)
 
+    rels_per_image = int(cfg.TRAIN.REL_BATCH_SIZE / num_images)
+
     # Get the input image blob, formatted for caffe
     im_blob, im_scales = _get_image_blob(roidb, random_scale_inds)
 
@@ -51,7 +53,7 @@ def get_minibatch(roidb, num_classes):
         roi_inds, rels = _sample_graph(roidb[im_i],
                                        fg_rois_per_image,
                                        rois_per_image,
-                                       num_neg_rels=cfg.TRAIN.NUM_NEG_RELS)
+                                       rels_per_image)
         if rels.size == 0:
             print('batch skipped')
             return None
@@ -85,10 +87,10 @@ def get_minibatch(roidb, num_classes):
         # viz_scene_graph(im_blob[im_i], rois, labels, viz_inds, rels)
 
     blobs['rois'] = rois_blob.copy()
-    blobs['labels'] = labels_blob.copy().astype(np.int32)
+    blobs['labels'] = labels_blob.copy().astype(np.int32).reshape((-1, 1))
     blobs['im_info'] = np.array([im_blob.shape[1], im_blob.shape[2], im_scales[0]], dtype=np.float32)
     blobs['relations'] = rels_blob[:, :2].copy().astype(np.int32)
-    blobs['predicates'] = rels_blob[:, 2].copy().astype(np.int32)
+    blobs['predicates'] = rels_blob[:, 2].copy().astype(np.int32).reshape((-1, 1))
     blobs['bbox_targets'] = bbox_targets_blob.copy()
     blobs['bbox_inside_weights'] = bbox_inside_blob.copy()
     blobs['bbox_outside_weights'] = \
@@ -139,7 +141,7 @@ def _gather_samples(roidb, roi_inds, rels, num_classes):
     return rels, labels, overlaps, rois, bbox_targets, bbox_inside_weights
 
 
-def _sample_graph(roidb, num_fg_rois, num_rois, num_neg_rels=128):
+def _sample_graph(roidb, num_fg_rois, num_rois, rels_per_image):
     """
     Sample a graph from the foreground rois of an image
     :param:
@@ -187,7 +189,8 @@ def _sample_graph(roidb, num_fg_rois, num_rois, num_neg_rels=128):
         # de-duplicate the relations
         _, indices = np.unique(["{} {}".format(i, j) for i,j,k in pos_rels], return_index=True)
         pos_rels = np.array(pos_rels)[indices, :]
-        # print('num pos rels = %i' % pos_rels.shape[0])
+        pos_inds = pos_rels[indices, :2].tolist()
+        #print('num pos rels = %i' % pos_rels.shape[0])
 
         # construct graph based on valid relations
         for rel in pos_rels:
@@ -196,10 +199,10 @@ def _sample_graph(roidb, num_fg_rois, num_rois, num_neg_rels=128):
             rels.append(rel)
             rels_inds.append(rel[:2].tolist())
 
-            if len(roi_inds) >= num_fg_rois:
+            if len(roi_inds) >= num_fg_rois or len(rels_inds) >= rels_per_image: # here it usually limit the num of pos rel
                 break
 
-    # print('sampled rels = %i' % len(rels))
+    #print('sampled rels = %i' % len(rels))
 
     roi_candidates = np.setdiff1d(all_fg_roi_inds, roi_inds)
     num_rois_to_sample = min(num_fg_rois - len(roi_inds), len(roi_candidates))
@@ -208,19 +211,22 @@ def _sample_graph(roidb, num_fg_rois, num_rois, num_neg_rels=128):
         roi_sample = npr.choice(roi_candidates.astype(np.int32), size=num_rois_to_sample,
                                 replace=False)
         roi_inds = np.hstack([roi_inds, roi_sample])
+        #print('sampled fg rois = %i' % num_rois_to_sample)
 
     # sample background relations
     sample_rels = []
     sample_rels_inds = []
     for i in roi_inds:
         for j in roi_inds:
-            if i != j and [i, j] not in rels_inds:
+            if i != j and [i, j] not in rels_inds and [i, j] not in pos_inds:
                 sample_rels.append([i,j,0])
                 sample_rels_inds.append([i,j])
+    #print('background rels= %i' % len(sample_rels))
 
     if len(sample_rels) > 0:
         # randomly sample negative edges to prevent no edges
-        num_neg_rels = np.minimum(len(sample_rels), num_neg_rels)
+        num_neg_rels = np.minimum(len(sample_rels), rels_per_image-len(rels_inds))
+        #fprint('sampled background rels= %i' % num_neg_rels)
         inds = npr.choice(np.arange(len(sample_rels)), size=num_neg_rels, replace=False)
         rels += [sample_rels[i] for i in inds]
         rels_inds += [sample_rels_inds[i] for i in inds]

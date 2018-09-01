@@ -209,7 +209,7 @@ class SolverWrapper(object):
         self.net.fix_variables(sess, self.pretrained_model)
         print('Fixed.')
         last_snapshot_iter = 0
-        rate = cfg.TRAIN.LEARNING_RATE
+        rate = cfg.TRAIN.RATE
         stepsizes = list(cfg.TRAIN.STEPSIZE)
 
         return rate, last_snapshot_iter, stepsizes, np_paths, ss_paths

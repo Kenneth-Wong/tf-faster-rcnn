@@ -133,7 +133,7 @@ class imdb(object):
             if (boxes[:, 0] < 0).any():
                 print(boxes)
             assert (boxes[:, 2] >= 0).all()
-            entry = {k:self.roidb[i][k] for k in self.roidb[i]}
+            entry = {k: self.roidb[i][k] for k in self.roidb[i]}
             entry['boxes'] = boxes
             entry['flipped'] = True
             self.roidb.append(entry)
@@ -246,7 +246,7 @@ class imdb(object):
                 gt_classes = gt_roidb[i]['gt_classes']
                 flipped = gt_roidb[i]['flipped']
                 width = gt_roidb[i]['width']
-                if flipped: ## flip the rpn boxes
+                if flipped:  ## flip the rpn boxes
                     oldx1 = boxes[:, 0].copy()
                     oldx2 = boxes[:, 2].copy()
                     boxes[:, 0] = width - oldx2 - 1

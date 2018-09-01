@@ -50,6 +50,13 @@ class BaseMemory(Network):
                            name="memory")
         return tf.summary.image('MEM-%02d' % iter, image)
 
+    def _add_rel_memory_summary(self, iter):
+        image = tf.py_func(draw_memory,
+                           [self._rel_mems[iter]],
+                           tf.float32,
+                           name="rel_memory")
+        return tf.summary.image('REL-MEM-%02d' % iter, image)
+
     def _add_pred_memory_summary(self, iter):
         # also visualize the predictions of the network
         if self._gt_image is None:
@@ -282,7 +289,7 @@ class BaseMemory(Network):
         return cls_score_mem
 
     def _bbox_iter(self, mem_fc7, is_training, name, iter):
-        initializer = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM_C_STD)
+        initializer = tf.random_normal_initializer(mean=0.0, stddev=cfg.MEM.C_STD)
         with tf.variable_scope(name):
             bbox_pred_mem = slim.fully_connected(mem_fc7, self._num_classes * 4,
                                                  weights_initializer=initializer,
@@ -372,14 +379,15 @@ class BaseMemory(Network):
                 map_comp = tf.reshape(map_prob, [-1, 1, 1, cfg.MEM.C], name="map_comp")
                 map_bbox = tf.reshape(map_bbox, [-1, 1, 1, cfg.MEM.C], name="map_bbox")
 
-                pool5_comp = tf.add_n([pool5, map_comp, map_bbox], name="addition")
-
-                pool5_comb = slim.conv2d(pool5_comp,
+                pool5_comp = slim.conv2d(pool5,
                                          cfg.MEM.C,
                                          [1, 1],
                                          weights_initializer=initializer,
                                          biases_initializer=tf.constant_initializer(0.0),
-                                         scope="convolution")
+                                         scope="pool5_comp")
+
+                pool5_comb = tf.add(pool5_comp, map_comp, name="addition")
+                pool5_comb = tf.add(pool5_comb, map_bbox, name="addition2")
                 pool5_comb = tf.nn.relu(pool5_comb, name="pool5_comb")
 
                 self._score_summaries[iter].append(map_prob)
@@ -406,14 +414,13 @@ class BaseMemory(Network):
 
                 map_comp = tf.reshape(map_prob, [-1, 1, 1, cfg.MEM.C], name="rel_map_comp")
 
-                pool5_comp = tf.add_n([obj_mem_rel_pool5_nb, map_comp], name="rel_addition")
-
-                pool5_comb = slim.conv2d(pool5_comp,
+                pool5_comp = slim.conv2d(obj_mem_rel_pool5_nb,
                                          cfg.MEM.C,
                                          [1, 1],
                                          weights_initializer=initializer,
                                          biases_initializer=tf.constant_initializer(0.0),
                                          scope="convolution")
+                pool5_comb = tf.add(map_comp, pool5_comp, name="addition")
                 pool5_comb = tf.nn.relu(pool5_comb, name="pool5_comb")
 
                 self._score_summaries[iter].append(map_prob)
@@ -697,9 +704,9 @@ class BaseMemory(Network):
         dim = rel_mem_pool5_upd_flatten.shape[-1]
         assert dim == obj_mem_obj_pool5_flatten.shape[-1]
         rel_mem_pool5_upd_flatten = tf.tile(tf.expand_dims(rel_mem_pool5_upd_flatten, axis=0),
-                                            [num_obj, 1, 1])  # N_obj, N_rel, d
+                                            [int(num_obj), 1, 1])  # N_obj, N_rel, d
         obj_mem_obj_pool5_flatten = tf.tile(tf.expand_dims(obj_mem_obj_pool5_flatten, axis=1),
-                                            [1, num_rel, 1])  # N_obj, N_rel, d
+                                            [1, int(num_rel), 1])  # N_obj, N_rel, d
 
         concat_feat = tf.reshape(tf.concat([obj_mem_obj_pool5_flatten, rel_mem_pool5_upd_flatten], axis=2),
                                  [-1, dim * 2])
@@ -758,19 +765,21 @@ class BaseMemory(Network):
     def _tag_loss(self, sub_tag, obj_tag, relations, push_weight, pull_weight, margin=1.0):
         all_tag = tf.concat([sub_tag, obj_tag], axis=0)
         rels = relations
-        rels[:, 1] = rels[:, 1] + sub_tag.shape[0]
-        tag_pairs = tf.gather(all_tag, rels)
-        tag_pairs = tf.reshape(tag_pairs, [-1, cfg.MEM.TAG_D * 2])
-        pair_sub, pair_obj = tf.split(tag_pairs, num_or_size_splits=2, axis=1)
+        num_rel = int(cfg.TRAIN.REL_BATCH_SIZE / cfg.TRAIN.IMS_PER_BATCH)
+        subject_inds = rels[:, 0]
+        object_inds = rels[:, 1]
+        # tag_pairs = tf.gather(all_tag, rels)
+        # tag_pairs = tf.reshape(tag_pairs, [-1, cfg.MEM.TAG_D * 2])
+        pair_sub = tf.gather(all_tag, subject_inds)
+        pair_obj = tf.gather(all_tag, object_inds)
+        # pair_sub, pair_obj = tf.split(tag_pairs, num_or_size_splits=2, axis=1)
         pair_mean = tf.add(pair_sub, pair_obj) / 2
 
         pull_loss = tf.reduce_mean(tf.reduce_sum(tf.square((pair_sub - pair_mean)), axis=1) + tf.reduce_sum(
             tf.square((pair_obj - pair_mean)), axis=1))
-        num_roi = sub_tag.shape[0]
-        assert num_roi == obj_tag.shape[0]
-        mean_tile_hor = tf.reshape(tf.tile(pair_mean, [1, num_roi]), [-1, cfg.MEM.TAG_D])
-        mean_tile_ver = tf.tile(pair_mean, [num_roi, 1])
-        push_loss = tf.reduce_sum(tf.maximum(0, margin - tf.reduce_sum(tf.abs(mean_tile_hor - mean_tile_ver), axis=1)))
+        mean_tile_hor = tf.reshape(tf.tile(pair_mean, [1, num_rel]), [-1, cfg.MEM.TAG_D])
+        mean_tile_ver = tf.tile(pair_mean, [num_rel, 1])
+        push_loss = tf.reduce_sum(tf.maximum(0., margin - tf.reduce_sum(tf.abs(mean_tile_hor - mean_tile_ver), axis=1)))
 
         loss = push_loss * push_weight + pull_loss * pull_weight
         return loss
@@ -803,7 +812,7 @@ class BaseMemory(Network):
                                        name="pred_rel")
 
             pred_rel_rois, pred_rel_batch_ids, \
-            pred_inv_rel_rois, pred_inv_rel_batch_ids = tf.py_func(compute_rel_target_memory,
+            pred_inv_rel_rois, pred_inv_rel_batch_ids = tf.py_func(compute_target_memory,
                                                                    [self.memory_size, pred_rel_rois,
                                                                     self._feat_stride[0]],
                                                                    [tf.float32, tf.int32, tf.float32, tf.int32],
@@ -850,9 +859,8 @@ class BaseMemory(Network):
 
                 # Update the memory with all the regions
                 mem = self._build_update(is_training, mem,
-                                         pool5_nb, cls_score, cls_prob, cls_pred,
-                                         rois, batch_ids, inv_rois, inv_batch_ids,
-                                         iter)
+                                         pool5_nb, cls_score, cls_prob, cls_pred, bbox_pred,
+                                         rois, batch_ids, inv_rois, inv_batch_ids, iter)
 
                 # predict relations
                 rel_cls_score, rel_cls_prob, rel_cls_pred, \
@@ -868,9 +876,9 @@ class BaseMemory(Network):
                                                  pred_inv_rel_rois, pred_inv_rel_batch_ids, iter)
 
                 # transfer the information from relation memory to object memory
-                mem = self._build_update_from_rel(rel_mem, mem, obj_mem_obj_pool5_nb, inv_rois, inv_batch_ids,
-                                                  pred_rel_rois, pred_rel_batch_ids, "mem_update_from_rel",
-                                                  iter)
+                # mem = self._build_update_from_rel(is_training, rel_mem, mem, obj_mem_obj_pool5_nb, inv_rois, inv_batch_ids,
+                #                                  pred_rel_rois, pred_rel_batch_ids, "mem_update_from_rel",
+                #                                  iter)
 
             if iter == 0:
                 reuse = True
@@ -954,6 +962,7 @@ class BaseMemory(Network):
             for iter in range(cfg.MEM.ITER):
                 val_summaries.append(self._add_pred_memory_summary(iter))
                 val_summaries.append(self._add_memory_summary(iter))
+                val_summaries.append(self._add_rel_memory_summary(iter))
                 for var in self._score_summaries[iter]:
                     self._add_score_iter_summary(iter, var)
             for key, var in self._event_summaries.items():
@@ -970,10 +979,10 @@ class BaseMemory(Network):
         self._memory_size = tf.placeholder(tf.int32, shape=[2])
         self._rel_memory_size = tf.placeholder(tf.int32, shape=[2])
         self._rois = tf.placeholder(tf.float32, shape=[None, 5])  # including batch_id and coord
-        self._labels = tf.placeholder(tf.int32, shape=[None])
+        self._labels = tf.placeholder(tf.int32, shape=[None, 1])
         self._rel_rois = tf.placeholder(tf.float32, shape=[None, 5])
         self._relations = tf.placeholder(tf.int32, shape=[None, 2])
-        self._predicates = tf.placeholder(tf.int32, shape=[None])
+        self._predicates = tf.placeholder(tf.int32, shape=[None, 1])
         self._bbox_targets = tf.placeholder(tf.float32, shape=[None, 4 * num_classes])
         self._bbox_inside_weights = tf.placeholder(tf.float32, shape=[None, 4 * num_classes])
         self._bbox_outside_weights = tf.placeholder(tf.float32, shape=[None, 4 * num_classes])
@@ -1011,7 +1020,7 @@ class BaseMemory(Network):
         if not testing:
             self._add_memory_losses("loss")
             layers_to_output.update(self._losses)
-            self._create_summary()
+            # self._create_summary()
 
         layers_to_output.update(self._predictions)
 
@@ -1026,32 +1035,36 @@ class BaseMemory(Network):
                      self._bbox_inside_weights: blobs['bbox_inside_weights'],
                      self._bbox_outside_weights: blobs['bbox_outside_weights'],
                      self._num_roi: blobs['num_roi'], self._num_rel: blobs['num_rel']}
-        rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss, _ = sess.run([self._losses["rpn_cross_entropy"],
-                                                                            self._losses['rpn_loss_box'],
-                                                                            self._losses['cross_entropy'],
-                                                                            self._losses['loss_box'],
-                                                                            self._losses['total_loss'],
-                                                                            train_op],
-                                                                           feed_dict=feed_dict)
-        return rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss
+        loss_cls, loss_bbox, loss_rel, loss_tag, loss, _ = sess.run([self._losses["cross_entropy"],
+                                                                     self._losses['bbox_loss'],
+                                                                     self._losses[
+                                                                         'rel_cross_entropy'],
+                                                                     self._losses['tag_loss'],
+                                                                     self._losses['total_loss'],
+                                                                     train_op],
+                                                                    feed_dict=feed_dict)
+        return loss_cls, loss_bbox, loss_rel, loss_tag, loss
 
-    def train_step_with_summary(self, sess, blobs, train_op):
+    def train_step_with_summary(self, sess, blobs, train_op, summary_grads):
         feed_dict = {self._image: blobs['data'], self._im_info: blobs['im_info'],
                      self._rois: blobs['rois'], self._rel_rois: blobs['rel_rois'],
                      self._memory_size: blobs['memory_size'], self._rel_memory_size: blobs['memory_size'],
                      self._labels: blobs['labels'], self._relations: blobs['relations'],
                      self._predicates: blobs['predicates'], self._bbox_targets: blobs['bbox_targets'],
                      self._bbox_inside_weights: blobs['bbox_inside_weights'],
+                     self._bbox_outside_weights: blobs['bbox_outside_weights'],
                      self._num_roi: blobs['num_roi'], self._num_rel: blobs['num_rel']}
-        rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss, summary, _ = sess.run([self._losses["rpn_cross_entropy"],
-                                                                                     self._losses['rpn_loss_box'],
-                                                                                     self._losses['cross_entropy'],
-                                                                                     self._losses['loss_box'],
-                                                                                     self._losses['total_loss'],
-                                                                                     self._summary_op,
-                                                                                     train_op],
-                                                                                    feed_dict=feed_dict)
-        return rpn_loss_cls, rpn_loss_box, loss_cls, loss_box, loss, summary
+        loss_cls, loss_bbox, loss_rel, loss_tag, loss, summary, gsummary, _ = sess.run([self._losses["cross_entropy"],
+                                                                                        self._losses['bbox_loss'],
+                                                                                        self._losses[
+                                                                                            'rel_cross_entropy'],
+                                                                                        self._losses['tag_loss'],
+                                                                                        self._losses['total_loss'],
+                                                                                        self._summary_op,
+                                                                                        summary_grads,
+                                                                                        train_op],
+                                                                                       feed_dict=feed_dict)
+        return loss_cls, loss_bbox, loss_rel, loss_tag, loss, summary, gsummary
 
     # take the last predicted output
     def test_image(self, sess, blobs):
